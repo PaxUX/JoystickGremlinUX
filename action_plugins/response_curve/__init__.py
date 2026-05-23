@@ -839,7 +839,7 @@ class CurveView(QtWidgets.QGraphicsScene):
         :param rect the drawing rectangle
         """
         painter.drawImage(
-            QtCore.QPoint(-g_scene_size, -g_scene_size),
+            QtCore.QPoint(int(-g_scene_size), int(-g_scene_size)),
             self.background_image
         )
 
@@ -1244,8 +1244,22 @@ class ResponseCurveFunctor(AbstractFunctor):
             raise gremlin.error.GremlinError("Invalid curve type")
 
     def process_event(self, event, value):
-        value.current = self.response_fn(self.deadzone_fn(value.current))
+        input_val = value.current
+        deadzone_val = self.deadzone_fn(value.current)
+        curve_val = self.response_fn(deadzone_val)
+        value.current = curve_val
+        # logging.getLogger("system").debug(
+        #     "ResponseCurve | Input: %.3f -> Deadzone: %.3f -> Curve: %.3f -> Output: %.3f (Type: %s)",
+        #     input_val, deadzone_val, curve_val, value.current, self._get_curve_type()
+        # )
         return True
+
+    def _get_curve_type(self):
+        """Returns the current curve type as a string."""
+        if isinstance(self.response_fn, gremlin.spline.CubicSpline):
+            return "cubic-spline"
+        elif isinstance(self.response_fn, gremlin.spline.CubicBezierSpline):
+            return "cubic-bezier-spline"
 
 
 class ResponseCurve(AbstractAction):

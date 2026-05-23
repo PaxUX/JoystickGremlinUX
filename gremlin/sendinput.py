@@ -20,6 +20,7 @@ import ctypes
 import ctypes.wintypes
 import enum
 import math
+import sys
 import threading
 import time
 
@@ -307,112 +308,323 @@ class MouseController:
             time.sleep(0.01)
 
 
-class _MOUSEINPUT(ctypes.Structure):
+if sys.platform == "win32":
+    # Windows: full SendInput implementation
 
-    """Defines the MOUSEINPUT structure.
+    class _MOUSEINPUT(ctypes.Structure):
 
-    https://msdn.microsoft.com/en-us/library/ms646273(v=VS.85).aspx
-    """
+        """Defines the MOUSEINPUT structure.
 
-    _fields_ = (
-        ("dx", ctypes.wintypes.LONG),
-        ("dy", ctypes.wintypes.LONG),
-        ("mouseData", ctypes.wintypes.DWORD),
-        ("dwFlags", ctypes.wintypes.DWORD),
-        ("time", ctypes.wintypes.DWORD),
-        ("dwExtraInfo", ctypes.POINTER(ctypes.wintypes.ULONG)),
-    )
+        https://msdn.microsoft.com/en-us/library/ms646273(v=VS.85).aspx
+        """
 
-
-class _KEYBDINPUT(ctypes.Structure):
-
-    """Defines the KEYBDINPUT structure.
-
-    https://msdn.microsoft.com/en-us/library/ms646271(v=vs.85).aspx
-    """
-
-    _fields_ = (
-        ("wVk", ctypes.wintypes.WORD),
-        ("wScan", ctypes.wintypes.WORD),
-        ("dwFlags", ctypes.wintypes.DWORD),
-        ("time", ctypes.wintypes.DWORD),
-        ("wExtraInfo", ctypes.POINTER(ctypes.wintypes.ULONG))
-    )
+        _fields_ = (
+            ("dx", ctypes.wintypes.LONG),
+            ("dy", ctypes.wintypes.LONG),
+            ("mouseData", ctypes.wintypes.DWORD),
+            ("dwFlags", ctypes.wintypes.DWORD),
+            ("time", ctypes.wintypes.DWORD),
+            ("dwExtraInfo", ctypes.POINTER(ctypes.wintypes.ULONG)),
+        )
 
 
-class _INPUTunion(ctypes.Union):
+    class _KEYBDINPUT(ctypes.Structure):
 
-    """Defines the INPUT union type.
+        """Defines the KEYBDINPUT structure.
 
-    https://msdn.microsoft.com/en-us/library/ms646270(v=vs.85).aspx
-    """
+        https://msdn.microsoft.com/en-us/library/ms646271(v=vs.85).aspx
+        """
 
-    _fields_ = (
-        ("mi", _MOUSEINPUT),
-        ("ki", _KEYBDINPUT)
-    )
-
-
-class _INPUT(ctypes.Structure):
-
-    """Defines the INPUT structure.
-
-    https://msdn.microsoft.com/en-us/library/ms646270(v=vs.85).aspx
-    """
-
-    _fields_ = (
-        ("type", ctypes.wintypes.DWORD),
-        ("union", _INPUTunion)
-    )
+        _fields_ = (
+            ("wVk", ctypes.wintypes.WORD),
+            ("wScan", ctypes.wintypes.WORD),
+            ("dwFlags", ctypes.wintypes.DWORD),
+            ("time", ctypes.wintypes.DWORD),
+            ("wExtraInfo", ctypes.POINTER(ctypes.wintypes.ULONG))
+        )
 
 
-def mouse_relative_motion(dx, dy):
-    _send_input(
-        _mouse_input(MOUSEEVENTF_MOVE, dx, dy)
-    )
+    class _INPUTunion(ctypes.Union):
+
+        """Defines the INPUT union type.
+
+        https://msdn.microsoft.com/en-us/library/ms646270(v=vs.85).aspx
+        """
+
+        _fields_ = (
+            ("mi", _MOUSEINPUT),
+            ("ki", _KEYBDINPUT)
+        )
 
 
-def mouse_press(button):
-    if button == MouseButton.Left:
-        _send_input(_mouse_input(MOUSEEVENTF_LEFTDOWN))
-    elif button == MouseButton.Right:
-        _send_input(_mouse_input(MOUSEEVENTF_RIGHTDOWN))
-    elif button == MouseButton.Middle:
-        _send_input(_mouse_input(MOUSEEVENTF_MIDDLEDOWN))
-    elif button == MouseButton.Back:
-        _send_input(_mouse_input(MOUSEEVENTF_XDOWN, data=XBUTTON1))
-    elif button == MouseButton.Forward:
-        _send_input(_mouse_input(MOUSEEVENTF_XDOWN, data=XBUTTON2))
+    class _INPUT(ctypes.Structure):
+
+        """Defines the INPUT structure.
+
+        https://msdn.microsoft.com/en-us/library/ms646270(v=vs.85).aspx
+        """
+
+        _fields_ = (
+            ("type", ctypes.wintypes.DWORD),
+            ("union", _INPUTunion)
+        )
 
 
-def mouse_release(button):
-    if button == MouseButton.Left:
-        _send_input(_mouse_input(MOUSEEVENTF_LEFTUP))
-    elif button == MouseButton.Right:
-        _send_input(_mouse_input(MOUSEEVENTF_RIGHTUP))
-    elif button == MouseButton.Middle:
-        _send_input(_mouse_input(MOUSEEVENTF_MIDDLEUP))
-    elif button == MouseButton.Back:
-        _send_input(_mouse_input(MOUSEEVENTF_XUP, data=XBUTTON1))
-    elif button == MouseButton.Forward:
-        _send_input(_mouse_input(MOUSEEVENTF_XUP, data=XBUTTON2))
+    def mouse_relative_motion(dx, dy):
+        _send_input(
+            _mouse_input(MOUSEEVENTF_MOVE, dx, dy)
+        )
 
 
-def mouse_wheel(motion):
-    _send_input(_mouse_input(MOUSEEVENTF_WHEEL, data=-motion*WHEEL_DELTA))
+    def mouse_press(button):
+        if button == MouseButton.Left:
+            _send_input(_mouse_input(MOUSEEVENTF_LEFTDOWN))
+        elif button == MouseButton.Right:
+            _send_input(_mouse_input(MOUSEEVENTF_RIGHTDOWN))
+        elif button == MouseButton.Middle:
+            _send_input(_mouse_input(MOUSEEVENTF_MIDDLEDOWN))
+        elif button == MouseButton.Back:
+            _send_input(_mouse_input(MOUSEEVENTF_XDOWN, data=XBUTTON1))
+        elif button == MouseButton.Forward:
+            _send_input(_mouse_input(MOUSEEVENTF_XDOWN, data=XBUTTON2))
 
 
-def _mouse_input(flags, dx=0, dy=0, data=0):
-    return _INPUT(
-        INPUT_MOUSE,
-        _INPUTunion(mi=_MOUSEINPUT(dx, dy, data, flags, 0, None))
-    )
+    def mouse_release(button):
+        if button == MouseButton.Left:
+            _send_input(_mouse_input(MOUSEEVENTF_LEFTUP))
+        elif button == MouseButton.Right:
+            _send_input(_mouse_input(MOUSEEVENTF_RIGHTUP))
+        elif button == MouseButton.Middle:
+            _send_input(_mouse_input(MOUSEEVENTF_MIDDLEUP))
+        elif button == MouseButton.Back:
+            _send_input(_mouse_input(MOUSEEVENTF_XUP, data=XBUTTON1))
+        elif button == MouseButton.Forward:
+            _send_input(_mouse_input(MOUSEEVENTF_XUP, data=XBUTTON2))
 
 
-def _send_input(*inputs):
-    nInputs = len(inputs)
-    LPINPUT = _INPUT * nInputs
-    pInputs = LPINPUT(*inputs)
-    cbSize = ctypes.c_int(ctypes.sizeof(_INPUT))
+    def mouse_wheel(motion):
+        _send_input(_mouse_input(MOUSEEVENTF_WHEEL, data=-motion*WHEEL_DELTA))
 
-    return ctypes.windll.user32.SendInput(nInputs, pInputs, cbSize)
+
+    def _mouse_input(flags, dx=0, dy=0, data=0):
+        return _INPUT(
+            INPUT_MOUSE,
+            _INPUTunion(mi=_MOUSEINPUT(dx, dy, data, flags, 0, None))
+        )
+
+
+    def _send_input(*inputs):
+        nInputs = len(inputs)
+        LPINPUT = _INPUT * nInputs
+        pInputs = LPINPUT(*inputs)
+        cbSize = ctypes.c_int(ctypes.sizeof(_INPUT))
+
+        return ctypes.windll.user32.SendInput(nInputs, pInputs, cbSize)
+
+else:
+    # Linux: mouse injection via /dev/uinput (mirrors key_inject.py pattern)
+    import fcntl as _fcntl
+    import logging as _logging
+    import os as _os
+    import struct as _struct
+
+    logger = _logging.getLogger("system")
+
+    _mouse_lock = threading.Lock()
+    _mouse_injector = None
+
+
+    # Mouse button codes for evdev
+    BTN_LEFT = 272
+    BTN_RIGHT = 273
+    BTN_MIDDLE = 274
+    BTN_BUTTON3 = 275
+    BTN_BUTTON4 = 276
+    BTN_BUTTON5 = 277
+    BTN_FORWARD = 278
+
+    # ioctl constants for raw backend (from Linux uinput.h)
+    UI_IOC_BASE = ord('U')
+    def _ioctl_nr(base, nr, size):
+        return ((size & 0x1FFF) << 16) | (base << 8) | nr
+    UI_SET_KEYBIT = _ioctl_nr(UI_IOC_BASE, 10, 4)
+    UI_DEV_SETUP  = _ioctl_nr(UI_IOC_BASE, 3, 92)
+    UI_DEV_CREATE = _ioctl_nr(UI_IOC_BASE, 1, 0)
+
+    _struct_input_event = _struct.Struct('<QqHHiH')  # tv_sec(8)+tv_usec(8)+type(2)+code(2)+value(4)+unused(2)
+    EV_SYN = 0
+    SYN_REPORT = 0
+    EV_REL = 2
+    EV_KEY = 1
+
+    _backend = None  # 'evdev', 'raw', or None
+
+
+    def _open_uinput_mouse():
+        """Create a virtual mouse on /dev/uinput (one-time singleton).
+        Sets _mouse_injector and _backend as side effects.
+        Returns True on success, False on failure."""
+        global _mouse_injector, _backend
+        if not _os.path.exists('/dev/uinput'):
+            return False
+        for bus in (0x03, 0x06):  # USB first, then Bluetooth fallback
+            try:
+                from evdev import UInput, ecodes
+                btn_codes = [BTN_LEFT, BTN_RIGHT, BTN_MIDDLE,
+                             BTN_BUTTON3, BTN_BUTTON4, BTN_BUTTON5, BTN_FORWARD]
+                _mouse_injector = UInput({
+                    ecodes.EV_KEY: btn_codes,
+                    ecodes.EV_REL: [ecodes.REL_WHEEL],
+                }, name='JoystickGremlin Virtual Mouse',
+                    vendor=0x1234, product=0x5678, bustype=bus)
+                _backend = 'evdev'
+                logger.debug('[MOUSE_INJECT] virtual mouse created via evdev on bus %d', bus)
+                return True
+            except Exception as e:
+                logger.debug('[MOUSE_INJECT] evdev bus=%d attempt failed: %s', bus, e)
+                continue
+
+        # Raw ioctl fallback
+        try:
+            fd = _os.open('/dev/uinput', _os.O_WRONLY | _os.O_NONBLOCK)
+            for code in [BTN_LEFT, BTN_RIGHT, BTN_MIDDLE,
+                         BTN_BUTTON3, BTN_BUTTON4, BTN_BUTTON5, BTN_FORWARD]:
+                bit = _struct.pack('I', code)
+                _fcntl.ioctl(fd, UI_SET_KEYBIT, bit)
+            name = b'JoystickGremlin Virtual Mouse'
+            setup = b'\x00' * 8 + name.ljust(80, b'\x00') + _struct.pack('I', 0)
+            _fcntl.ioctl(fd, UI_DEV_SETUP, setup)
+            _fcntl.ioctl(fd, UI_DEV_CREATE, b'')
+            _mouse_injector = fd
+            _backend = 'raw'
+            logger.debug('[MOUSE_INJECT] virtual mouse created via raw ioctl')
+            return True
+        except Exception as e:
+            logger.error('[MOUSE_INJECT] raw uinput creation failed: %s: %s', type(e).__name__, e)
+            return False
+
+
+    def _inject_button(button, down):
+        """Inject a single mouse button event via uinput."""
+        global _mouse_injector, _backend
+        with _mouse_lock:
+            if _mouse_injector is None:
+                if not _open_uinput_mouse():
+                    return False
+            if _mouse_injector is None:
+                return False
+        btn_code = {
+            MouseButton.Left: BTN_LEFT,
+            MouseButton.Right: BTN_RIGHT,
+            MouseButton.Middle: BTN_MIDDLE,
+            MouseButton.Forward: BTN_FORWARD,
+            MouseButton.Back: BTN_BUTTON5,
+        }.get(button, None)
+        if btn_code is None:
+            return False
+        state = 1 if down else 0
+
+        if _backend == 'evdev':
+            from evdev import ecodes
+            try:
+                _mouse_injector.write(ecodes.EV_KEY, btn_code, state)
+                _mouse_injector.syn()
+                logger.debug('[MOUSE_INJECT] %s BUTTON: %s via evdev',
+                             'DOWN' if down else 'UP', button.name)
+                return True
+            except Exception as e:
+                logger.error('[MOUSE_INJECT] evdev button inject failed: %s', e)
+                _mouse_injector = None
+                _backend = None
+                return False
+        elif _backend == 'raw':
+            fd = _mouse_injector
+            try:
+                event = _struct_input_event.pack(0, 0, EV_KEY, btn_code, state, 0)
+                syn = _struct_input_event.pack(0, 0, EV_SYN, SYN_REPORT, 0, 0)
+                _os.write(fd, event)
+                _os.write(fd, syn)
+                logger.debug('[MOUSE_INJECT] %s BUTTON: %s via raw',
+                             'DOWN' if down else 'UP', button.name)
+                return True
+            except OSError as e:
+                logger.error('[MOUSE_INJECT] raw button inject failed: %s', e)
+                _os.close(fd)
+                _mouse_injector = None
+                _backend = None
+                return False
+        return False
+
+    def _inject_wheel(motion):
+        """Inject mouse wheel via uinput."""
+        global _mouse_injector, _backend
+        with _mouse_lock:
+            if _mouse_injector is None:
+                if not _open_uinput_mouse():
+                    return False
+            if _mouse_injector is None:
+                return False
+        dir = 1 if motion > 0 else -1
+
+        if _backend == 'evdev':
+            from evdev import ecodes
+            try:
+                _mouse_injector.write(ecodes.EV_REL, ecodes.REL_WHEEL, dir)
+                _mouse_injector.syn()
+                logger.debug('[MOUSE_INJECT] WHEEL: %s via evdev',
+                             'DOWN' if dir < 0 else 'UP')
+                return True
+            except Exception as e:
+                logger.error('[MOUSE_INJECT] evdev wheel inject failed: %s', e)
+                _mouse_injector = None
+                _backend = None
+                return False
+        elif _backend == 'raw':
+            fd = _mouse_injector
+            try:
+                event = _struct_input_event.pack(0, 0, EV_REL, 120, dir, 0)
+                syn = _struct_input_event.pack(0, 0, EV_SYN, SYN_REPORT, 0, 0)
+                _os.write(fd, event)
+                _os.write(fd, syn)
+                logger.debug('[MOUSE_INJECT] WHEEL: %s via raw',
+                             'DOWN' if dir < 0 else 'UP')
+                return True
+            except OSError as e:
+                logger.error('[MOUSE_INJECT] raw wheel inject failed: %s', e)
+                _os.close(fd)
+                _mouse_injector = None
+                _backend = None
+                return False
+        return False
+
+
+    def mouse_relative_motion(dx, dy):
+        """Stub for mouse_relative_motion on Linux (no-op)."""
+        pass
+
+
+    def mouse_press(button):
+        """Press a mouse button via /dev/uinput."""
+        return _inject_button(button, True)
+
+
+    def mouse_release(button):
+        """Release a mouse button via /dev/uinput."""
+        return _inject_button(button, False)
+
+
+    def mouse_wheel(motion):
+        """Scroll the mouse wheel via /dev/uinput."""
+        return _inject_wheel(motion)
+
+
+    # On Linux, _MOUSEINPUT/KEYBDINPUT/INPUT_MOUSE/INPUT_KEYBOARD etc.
+    # are undefined. Define stub structures so any code that references
+    # them at runtime still works.
+    _MOUSEINPUT = _KEYBDINPUT = _INPUTunion = _INPUT = None
+    INPUT_MOUSE = 0
+    INPUT_KEYBOARD = 1
+    def _mouse_input(flags, dx=0, dy=0, data=0):
+        return None
+    def _send_input(*inputs):
+        return 0

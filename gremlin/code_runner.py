@@ -15,6 +15,8 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+from __future__ import annotations
+
 import importlib
 import logging
 import os
@@ -234,6 +236,11 @@ class CodeRunner:
             self.event_handler.mode_changed.connect(
                 self._vjoy_curves.mode_changed
             )
+            # logging.getLogger("system").log(
+            #     logging.DEBUG,
+            #     "CodeRunner.start: connected mode_changed signal, profile_data set with %d vjoy_devices",
+            #     len(self._vjoy_curves.profile_data) if self._vjoy_curves.profile_data else 0
+            # )
 
             # Use inheritance to build input action lookup table
             self.event_handler.build_event_lookup(inheritance_tree)
@@ -265,6 +272,9 @@ class CodeRunner:
             self.event_handler.change_mode(start_mode)
             self.event_handler.resume()
             self._running = True
+
+            # Now that devices are initialized, apply initial response curves
+            self._vjoy_curves.mode_changed(start_mode)
 
             sendinput.MouseController().start()
         except ImportError as e:
@@ -325,27 +335,137 @@ class VJoyCurves:
 
         :param mode_name the name of the new mode
         """
+        # logging.getLogger("system").debug(
+        #     "VJoyCurves.mode_changed CALLED with mode=%s profile_data=%s",
+        #     mode_name, "SET" if self.profile_data else "NONE"
+        # )
         if not self.profile_data:
+            # logging.getLogger("system").debug(
+            #     "VJoyCurves.mode_changed: SKIPPED (no profile data)"
+            # )
             return
 
-        vjoy = gremlin.joystick_handling.VJoyProxy()
-        for guid, device in self.profile_data.items():
-            if mode_name in device.modes:
-                for aid, data in device.modes[mode_name].config[
-                        gremlin.common.InputType.JoystickAxis
-                ].items():
-                    # Get integer axis id in case an axis enum was used
-                    axis_id = vjoy_module.vjoy.VJoy.axis_equivalence.get(aid, aid)
-                    vjoy_id = joystick_handling.vjoy_id_from_guid(guid)
+        # logging.getLogger("system").debug(
+        #     "VJoyCurves.mode_changed: mode=%s, vjoy_devices=%d",
+        #     mode_name, len(self.profile_data)
+        # )
 
-                    if len(data.containers) > 0 and \
-                            vjoy[vjoy_id].is_axis_valid(axis_id):
-                        action = data.containers[0].action_sets[0][0]
-                        vjoy[vjoy_id].axis(aid).set_deadzone(*action.deadzone)
-                        vjoy[vjoy_id].axis(aid).set_response_curve(
-                            action.mapping_type,
-                            action.control_points
-                        )
+        vjoy = gremlin.joystick_handling.VJoyProxy()
+        active_vjoy = {vid: dev for vid, dev in gremlin.joystick_handling.VJoyProxy.vjoy_devices.items()}
+        # logging.getLogger("system").debug(
+        #     "VJoyCurves: live vJoy devices: %s",
+        #     {vid: dev.axis_count for vid, dev in active_vjoy.items()}
+        # )
+        # logging.getLogger("system").debug(
+        #     "VJoyCurves: profile vjoy_devices=%d", len(self.profile_data)
+        # )
+        # for guid, device in self.profile_data.items():
+        #     logging.getLogger("system").debug(
+        #         "VJoyCurves: profile device guid=%s type=%s modes=%s",
+        #         str(guid), device.type, list(device.modes.keys())
+        #     )
+        #     for mname, mode_obj in device.modes.items():
+        #         axes_config = mode_obj.config.get(gremlin.common.InputType.JoystickAxis, {})
+        #         logging.getLogger("system").debug(
+        #             "VJoyCurves:   device guid=%s mode=%s axes_in_config=%d",
+        #             str(guid), mname, len(axes_config)
+        #         )
+        #         for aid, data in axes_config.items():
+        #             has_curve = False
+        #             if len(data.containers) > 0 and data.containers[0].action_sets:
+        #                 for act_set in data.containers[0].action_sets:
+        #                     for act in act_set:
+        #                         if hasattr(act, 'mapping_type'):
+        #                             has_curve = True
+        #                             logging.getLogger("system").debug(
+        #                                 "VJoyCurves:   AXIS %d has response-curve: mapping_type=%s",
+        #                                 aid, act.mapping_type
+        #                             )
+
+        for guid, device in self.profile_data.items():
+            # logging.getLogger("system").debug(
+            #     "VJoyCurves: checking device guid=%s, modes=%s",
+            #     str(guid), list(device.modes.keys())
+            # )
+            if mode_name in device.modes:
+                mode = device.modes[mode_name]
+                # Check all config types present
+                # logging.getLogger("system").debug(
+                #     "VJoyCurves: mode config keys=%s",
+                #     list(mode.config.keys())
+                # )
+                if gremlin.common.InputType.JoystickAxis in mode.config:
+                    for aid, data in mode.config[
+                            gremlin.common.InputType.JoystickAxis
+                    ].items():
+                        # logging.getLogger("system").debug(
+                        #     "VJoyCurves: axis_id=%d, containers=%d",
+                        #     aid, len(data.containers)
+                        # )
+                        if len(data.containers) == 0:
+                            continue
+                        # logging.getLogger("system").debug(
+                        #     "VJoyCurves: containers[0].action_sets=%d, actions[0]=%d",
+                        #     len(data.containers[0].action_sets),
+                        #     len(data.containers[0].action_sets[0]) if data.containers[0].action_sets else 0
+                        # )
+                        # Get vJoy device id from guid
+                        vjoy_id = joystick_handling.vjoy_id_from_guid(guid)
+                        # aid is from the profile — it's a linear axis index (1-based).
+                        # The vJoy C module / is_axis_valid need DLL axis constants (48=X, 49=Y, etc.)
+                        inv_lookup = {v: k for k, v in vjoy[vjoy_id]._axis_lookup.items()}
+                        axis_id = inv_lookup.get(aid)
+                        if axis_id is None:
+                            logging.getLogger("system").debug(
+                                "VJoyCurves: SKIP -> no DLL constant for linear index %d",
+                                aid
+                            )
+                            continue
+                        # logging.getLogger("system").debug(
+                        #     "VJoyCurves: resolved vjoy_id=%d, axis_id=%d (linear=%d)",
+                        #     vjoy_id, axis_id, aid
+                        # )
+
+                        is_valid = vjoy[vjoy_id].is_axis_valid(axis_id=axis_id)
+                        # logging.getLogger("system").debug(
+                        #     "VJoyCurves: is_axis_valid(axis_id=%d, vjoy_id=%d)=%s",
+                        #     axis_id, vjoy_id, is_valid
+                        # )
+                        if len(data.containers) > 0 and is_valid:
+                            if data.containers[0].action_sets and len(data.containers[0].action_sets) > 0 and data.containers[0].action_sets[0]:
+                                action = data.containers[0].action_sets[0][0]
+                                # logging.getLogger("system").debug(
+                                #     "VJoyCurves: >>>>>>>> APPLYING curve to vJoy[%d].axis[%d] (linear=%d): type=%s, points=%s, deadzone=%s",
+                                #     vjoy_id, axis_id, aid, action.mapping_type, action.control_points, action.deadzone
+                                # )
+                                vjoy[vjoy_id].axis(axis_id=axis_id).set_deadzone(*action.deadzone)
+                                vjoy[vjoy_id].axis(axis_id=axis_id).set_response_curve(
+                                    action.mapping_type,
+                                    action.control_points
+                                )
+                                # logging.getLogger("system").debug(
+                                #     "VJoyCurves: AFTER set_response_curve -> axis._response_curve_fn=%s",
+                                #     vjoy[vjoy_id].axis(axis_id=axis_id)._response_curve_fn
+                                # )
+            #                 else:
+            #                     logging.getLogger("system").debug(
+            #                         "VJoyCurves: SKIP -> action_sets[0] is empty"
+            #                     )
+            #             elif not len(data.containers) > 0:
+            #                 logging.getLogger("system").debug(
+            #                     "VJoyCurves: SKIP -> no containers (containers=%d)",
+            #                     len(data.containers)
+            #                 )
+            #             else:
+            #                 logging.getLogger("system").debug(
+            #                     "VJoyCurves: SKIP -> axis not valid (is_valid=%s, axis_id=%d)",
+            #                     is_valid, axis_id
+            #                 )
+            # else:
+            #     logging.getLogger("system").debug(
+            #         "VJoyCurves: NO MATCH for mode '%s' in device %s (modes: %s)",
+            #         mode_name, str(guid), list(device.modes.keys())
+            #     )
 
 
 class MergeAxis:

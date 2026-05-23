@@ -18,32 +18,13 @@
 import os
 import subprocess
 import sys
-# === pywinreg / winreg stub (for Linux bootstrapping)
-try:
-    import winreg
-except ImportError:
-    class _fake_winreg:
-        HKEY_CURRENT_USER = None
-        HKCU = None
-        @staticmethod
-        def OpenKey(*a, **k):
-            class _h:
-                def Close(self): pass
-                def __enter__(self): return self
-                def __exit__(self, *a): pass
-            return _h()
-        @staticmethod
-        def QueryInfoKey(h): return (0, 0)
-        @staticmethod
-        def EnumValue(h, i): return (None, None, 0)
-    winreg = _fake_winreg()
+import winreg
 
 from PyQt5 import QtCore, QtGui, QtWidgets
 
 import dill
 
 import gremlin
-import gremlin.version
 from . import common, ui_about
 
 
@@ -76,23 +57,6 @@ class OptionsUi(common.BaseDialogUi):
         """Creates the general options page."""
         self.general_page = QtWidgets.QWidget()
         self.general_layout = QtWidgets.QVBoxLayout(self.general_page)
-
-        # Number of vJoy devices (bold label, at top of page)
-        self.vjoy_count_layout = QtWidgets.QHBoxLayout()
-        self.vjoy_count_label = QtWidgets.QLabel("Number of vJoy devices")
-        vjoy_font = self.vjoy_count_label.font()
-        vjoy_font.setBold(True)
-        self.vjoy_count_label.setFont(vjoy_font)
-        self.vjoy_count_value = QtWidgets.QSpinBox()
-        self.vjoy_count_value.setRange(1, 16)
-        self.vjoy_count_value.setValue(self.config.vjoy_device_count)
-        self.vjoy_count_value.valueChanged.connect(self._vjoy_device_count)
-        self.vjoy_count_layout.addWidget(self.vjoy_count_label)
-        self.vjoy_count_layout.addWidget(self.vjoy_count_value)
-        self.vjoy_count_layout.addStretch()
-        self.general_layout.insertLayout(0, self.vjoy_count_layout)
-        # Space after the vJoy control before the rest of the options
-        self.general_layout.insertSpacing(1, 6)
 
         # Highlight input option
         self.highlight_input = QtWidgets.QCheckBox(
@@ -130,11 +94,11 @@ class OptionsUi(common.BaseDialogUi):
         self.start_minimized.setChecked(self.config.start_minimized)
 
         # Start on user login
-        # self.start_with_windows = QtWidgets.QCheckBox(
-        #     "Start Joystick Gremlin with Windows"
-        # )
-        # self.start_with_windows.clicked.connect(self._start_windows)
-        # self.start_with_windows.setChecked(self._start_windows_enabled())
+        self.start_with_windows = QtWidgets.QCheckBox(
+            "Start Joystick Gremlin with Windows"
+        )
+        self.start_with_windows.clicked.connect(self._start_windows)
+        self.start_with_windows.setChecked(self._start_windows_enabled())
 
         # Show message on mode change
         self.show_mode_change_message = QtWidgets.QCheckBox(
@@ -201,12 +165,11 @@ class OptionsUi(common.BaseDialogUi):
         self.general_layout.addWidget(self.close_to_systray)
         self.general_layout.addWidget(self.activate_on_launch)
         self.general_layout.addWidget(self.start_minimized)
-#        self.general_layout.addWidget(self.start_with_windows)
+        self.general_layout.addWidget(self.start_with_windows)
         self.general_layout.addWidget(self.show_mode_change_message)
         self.general_layout.addLayout(self.default_action_layout)
         self.general_layout.addLayout(self.macro_axis_polling_layout)
         self.general_layout.addLayout(self.macro_axis_minimum_change_layout)
-
         self.general_layout.addStretch()
         self.tab_container.addTab(self.general_page, "General")
 
@@ -278,12 +241,9 @@ class OptionsUi(common.BaseDialogUi):
         # Display instructions for non admin users
         if not gremlin.util.is_user_admin():
             label = QtWidgets.QLabel(
-                "Feature not available under Linux"
-                ""
-                ""
-                # "In order to use HidGuardian to both specify the devices to "
-                # "hide via HidGuardian as well as have Gremlin see them, "
-                # "Gremlin has to be run as Administrator."
+                "In order to use HidGuardian to both specify the devices to "
+                "hide via HidGuardian as well as have Gremlin see them, "
+                "Gremlin has to be run as Administrator."
             )
             label.setStyleSheet("QLabel { background-color : '#FFF4B0'; }")
             label.setWordWrap(True)
@@ -412,15 +372,13 @@ class OptionsUi(common.BaseDialogUi):
         if clicked:
             path = os.path.abspath(sys.argv[0])
             subprocess.run(
-                r'reg add "HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run" /V "Joystick Gremlin" /t REG_SZ /F /D "{}"'.format(path)
+                'reg add "HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run" /V "Joystick Gremlin" /t REG_SZ /F /D "{}"'.format(path)
             )
         else:
             subprocess.run(
-                r'reg delete "HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run" /F /V "Joystick Gremlin"'
+                'reg delete "HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run" /F /V "Joystick Gremlin"'
             )
-
-        if sys.platform.startswith("win"):
-            self.activateWindow()
+        self.activateWindow()
 
     def _start_windows_enabled(self):
         """Returns whether or not Gremlin should launch on login.
@@ -589,13 +547,6 @@ class OptionsUi(common.BaseDialogUi):
         """
         self.config.macro_axis_minimum_change_rate = value
 
-    def _vjoy_device_count(self, value):
-        """Updates the config with the number of vJoy devices.
-
-        :param value the number of vJoy devices
-        """
-        self.config.vjoy_device_count = value
-
     def _create_hg_cb(self, *params):
         return lambda x: self._update_hg_device(x, *params)
 
@@ -621,148 +572,35 @@ class ProcessWindow(common.BaseDialogUi):
         """
         super().__init__(parent)
 
-        self.setWindowTitle("Select Application")
-        self.resize(550, 650)
+        self.setWindowTitle("Process List")
+        self.setMinimumWidth(400)
+        self.setMinimumHeight(600)
 
         self.main_layout = QtWidgets.QVBoxLayout(self)
-
-        # Helpful label for UX
-        self.info_label = QtWidgets.QLabel(
-            "Double-click a running application to map a profile to it, or type its path manually."
-        )
-        self.info_label.setWordWrap(True)
-        self.info_label.setStyleSheet("QLabel { color: gray; }")
-        self.main_layout.addWidget(self.info_label)
-
-        # Search / filter box
-        self.filter_edit = QtWidgets.QLineEdit()
-        self.filter_edit.setPlaceholderText("Filter processes by name or path...")
-        self.filter_edit.textChanged.connect(self._filter_processes)
-        self.main_layout.addWidget(self.filter_edit)
-
-        # Proxy model for filtering
         self.list_model = QtCore.QStringListModel()
-        self.proxy_model = QtCore.QSortFilterProxyModel()
-        self.proxy_model.setSourceModel(self.list_model)
-        self.proxy_model.setFilterCaseSensitivity(QtCore.Qt.CaseInsensitive)
-
-        # List view
+        self.list_model.setStringList(
+            gremlin.process_monitor.list_current_processes()
+        )
         self.list_view = QtWidgets.QListView()
-        self.list_view.setModel(self.proxy_model)
-        self.list_view.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
-        self.list_view.doubleClicked.connect(self._select_on_double_click)
+        self.list_view.setModel(self.list_model)
+        self.list_view.setEditTriggers(
+            QtWidgets.QAbstractItemView.NoEditTriggers
+        )
         self.main_layout.addWidget(self.list_view)
-
-        # Action buttons
-        self.button_layout = QtWidgets.QHBoxLayout()
-
-        self.copy_button = QtWidgets.QPushButton("Copy Path")
-        self.copy_button.clicked.connect(self._copy_path)
-        self.button_layout.addWidget(self.copy_button)
 
         self.select_button = QtWidgets.QPushButton("Select")
         self.select_button.clicked.connect(self._select)
-        self.button_layout.addWidget(self.select_button)
-
-        self.main_layout.addLayout(self.button_layout)
-
-        # Populate initial list
-        self._refresh_processes()
-
-    def _refresh_processes(self):
-        """Refreshes the process list, filtering out system daemons."""
-        raw_processes = gremlin.process_monitor.list_current_processes()
-
-        # Gaming/platform keywords to always include regardless of path
-        gaming_names = {
-            'steam', 'steamwebhelper', 'proton', 'wine', 'minecraft',
-            'lutris', 'dosbox', 'emulationstation', 'retroarch', 'kodi',
-            'blender', 'vscode', 'chromium', 'firefox', 'google-chrome',
-            'sublime_text', 'nautilus', 'dolphin', 'thunar', 'nemo',
-            'gedit', 'code',
-        }
-
-        # User-space path prefixes (Linux)
-        linux_user_prefixes = ('/home/', '/opt/', '/mnt/', '/media/', '/run/user/')
-
-        filtered_processes = []
-        for path in raw_processes:
-            basename = os.path.basename(path).lower()
-
-            if sys.platform == 'win32':
-                # On Windows: show anything matching gaming names or in common user dirs
-                user_dirs = ('\\Program Files\\', '\\Program Files (x86)\\', '\\Users\\')
-                matches = basename in gaming_names or any(
-                    path.upper().startswith(d.replace('\\', '\\').upper())
-                    for d in user_dirs
-                )
-                if matches:
-                    filtered_processes.append(path)
-            else:
-                # On Linux: show processes in user space + gaming platforms
-                is_user_app = (
-                    path.startswith('/home/') or path.startswith('/opt/') or
-                    path.startswith('/mnt/') or path.startswith('/media/') or
-                    path.startswith('/run/user/')
-                )
-                is_gaming = basename in gaming_names
-                if is_user_app or is_gaming:
-                    filtered_processes.append(path)
-
-        self.list_model.setStringList(sorted(filtered_processes))
-
-    def _filter_processes(self, text):
-        """Updates the filter regex based on the search box."""
-        self.proxy_model.setFilterFixedString(text)
-
-    def _select_on_double_click(self, index):
-        """Emits process_selected when an item is double-clicked."""
-        mapped_index = self.proxy_model.mapToSource(index)
-        if mapped_index.isValid():
-            path = mapped_index.data()
-            if path:
-                self.process_selected.emit(path)
-                self.close()
+        self.main_layout.addWidget(self.select_button)
 
     def _select(self):
-        """Emits the process signal when the select button is pressed."""
-        current_index = self.list_view.currentIndex()
-        if current_index.isValid():
-            mapped_index = self.proxy_model.mapToSource(current_index)
-            if mapped_index.isValid():
-                path = mapped_index.data()
-                self.process_selected.emit(path)
-                self.close()
-
-    def _copy_path(self):
-        """Copies the currently selected process path to the clipboard."""
-        current_index = self.list_view.currentIndex()
-        if current_index.isValid():
-            mapped_index = self.proxy_model.mapToSource(current_index)
-            if mapped_index.isValid():
-                path = mapped_index.data()
-                clipboard = QtWidgets.QApplication.clipboard()
-                clipboard.setText(path)
-                QtWidgets.QMessageBox.information(
-                    self,
-                    "Path Copied",
-                    f"Path copied to clipboard:\n\n{path}"
-                )
+        """Emits the process_signal when the select button is pressed."""
+        self.process_selected.emit(self.list_view.currentIndex().data())
+        self.close()
 
 
 class LogWindowUi(common.BaseDialogUi):
 
-    """Window displaying log file content.
-
-    Uses tail-based incremental updates to avoid loading entire log files
-    into memory, which caused std::bad_alloc crashes on long-running systems.
-    """
-
-    # Maximum total content across all tabs (bytes). Oldest lines are dropped
-    # when this limit is exceeded to prevent QTextDocument from growing without bound.
-    MAX_CONTENT_BYTES = 10 * 1024 * 1024  # 10 MB
-    # Number of lines to read from the tail on initial load.
-    INITIAL_TAIL_LINES = 10000
+    """Window displaying log file content."""
 
     def __init__(self,  parent=None):
         """Creates a new instance.
@@ -779,8 +617,6 @@ class LogWindowUi(common.BaseDialogUi):
         self.main_layout.addWidget(self.tab_container)
 
         self._ui_elements = {}
-        # Track file sizes so we can do incremental appends instead of full reloads.
-        self._file_sizes = {}
         self._create_log_display(
             os.path.join(gremlin.util.userprofile_path(), "system.log"),
             "System"
@@ -803,48 +639,6 @@ class LogWindowUi(common.BaseDialogUi):
         self.watcher.stop()
         super().closeEvent(event)
 
-    def _tail_file(self, fname, n_lines):
-        """Read the last n_lines from fname without loading the entire file.
-
-        Walks the file backwards in 4 KB chunks looking for newline separators
-        to determine line boundaries.
-
-        :param fname path to the file
-        :param n_lines number of trailing lines to return
-        :return text content (str), or "" if file is empty/unreadable
-        """
-        try:
-            size = os.path.getsize(fname)
-        except OSError:
-            return ""
-
-        if size == 0:
-            return ""
-
-        with open(fname, "rb") as f:
-            # Seek backwards and count newlines
-            chunk_size = 4096
-            data = b""
-            offset = size
-            newlines_seen = 0
-            while newlines_seen <= n_lines and offset > 0:
-                chunk_len = min(chunk_size, offset)
-                offset -= chunk_len
-                f.seek(offset)
-                chunk = f.read(chunk_len)
-                data = chunk + data
-
-                # Count newlines in the new chunk
-                newlines_seen += chunk.count(b"\n")
-
-            # Decode, then slice to last n_lines
-            text = data.decode("utf-8", errors="replace")
-            lines = text.splitlines()
-            if newlines_seen > n_lines:
-                cut = newlines_seen - n_lines
-                lines = lines[cut:]
-            return "\n".join(lines)
-
     def _create_log_display(self, fname, title):
         """Creates a new tab displaying log file contents.
 
@@ -854,18 +648,7 @@ class LogWindowUi(common.BaseDialogUi):
         page = QtWidgets.QWidget()
         layout = QtWidgets.QVBoxLayout(page)
         log_display = QtWidgets.QTextEdit()
-        log_display.setReadOnly(True)
-        log_display.setWordWrapMode(QtGui.QTextOption.WrapAtWordBoundaryOrAnywhere)
-
-        # Initial load: use tail to avoid loading entire file into memory.
-        log_display.setPlainText(self._tail_file(fname, self.INITIAL_TAIL_LINES))
-
-        # Track file size for incremental updates.
-        try:
-            self._file_sizes[fname] = os.path.getsize(fname)
-        except OSError:
-            self._file_sizes[fname] = 0
-
+        log_display.setText(open(fname).read())
         button = QtWidgets.QPushButton("Clear log")
         button.clicked.connect(lambda: self._clear_log(fname))
         layout.addWidget(log_display)
@@ -883,94 +666,23 @@ class LogWindowUi(common.BaseDialogUi):
             title
         )
 
-    def _enforce_content_limit(self, widget):
-        """Drop oldest lines if QTextEdit content exceeds MAX_CONTENT_BYTES.
-
-        :param widget QTextEdit to check / trim
-        """
-        text = widget.toPlainText()
-        # Encode to bytes using UTF-8 to get real byte size.
-        while len(text.encode("utf-8", errors="replace")) > self.MAX_CONTENT_BYTES:
-            # Remove first 500 lines at a time to avoid chopping in the middle of a line.
-            lines = text.splitlines(True)  # keep trailing newlines
-            num_lines = len(lines)
-            if num_lines <= 500:
-                break
-            # Remove the first chunk.
-            remove_count = min(500, num_lines)
-            text = "".join(lines[remove_count:])
-            widget.setPlainText(text)
-
     def _clear_log(self, fname):
         """Clears the specified log file.
 
         :param fname path to the file to clear
         """
-        try:
-            with open(fname, "w"):
-                pass  # truncate
-        except OSError:
-            pass
-
-        widget = self._ui_elements[fname]["log_display"]
-        widget.setPlainText("")
-        self._file_sizes[fname] = 0
+        open(fname, "w").close()
 
     def _reload(self, fname):
-        """Appends only new content to the given log tab.
+        """Reloads the content of tab displaying the given file.
 
-        Tracks the file size seen at the last update and reads only
-        bytes that have been appended since then.
-
-        :param fname path to the file whose content to update
+        :param fname name of the file whose content to update
         """
-        ui_entry = self._ui_elements[fname]
-        widget = ui_entry["log_display"]
-        old_size = self._file_sizes.get(fname, 0)
-
-        try:
-            new_size = os.path.getsize(fname)
-        except OSError:
-            return
-
-        # File shrank -> probably truncated / log-rotated. Reload from tail.
-        if new_size < old_size:
-            widget.setPlainText(self._tail_file(fname, self.INITIAL_TAIL_LINES))
-            self._file_sizes[fname] = new_size
-            return
-
-        # Incremental: read only the new portion appended to the file.
-        if new_size > old_size:
-            try:
-                with open(fname, "rb") as f:
-                    f.seek(old_size)
-                    delta = f.read(new_size - old_size).decode("utf-8", errors="replace")
-                    if delta:
-                        # Use QTextCursor to append efficiently (O(delta))
-                        # rather than setText which triggers a full QTextDocument
-                        # C++ parse (O(total_content) -- the root cause of
-                        # std::bad_alloc crashes on files >100MB).
-                        if delta.endswith("\n"):
-                            cursor = widget.textCursor()
-                            cursor.movePosition(QtGui.QTextCursor.End)
-                            cursor.insertText(delta.strip("\n"))
-                        else:
-                            # No trailing newline: insert at end + save cursor
-                            cursor = widget.textCursor()
-                            cursor.movePosition(QtGui.QTextCursor.End)
-                            cursor.insertText(delta)
-
-                        # Drop oldest lines if content grows past the hard cap.
-                        self._enforce_content_limit(widget)
-            except OSError:
-                pass
-
-            self._file_sizes[fname] = new_size
-
-        # If user hasn't scrolled up, auto-follow the bottom.
-        scroll = widget.verticalScrollBar()
-        if scroll.value() >= scroll.maximum() - 5:
-            scroll.setValue(scroll.maximum())
+        widget = self._ui_elements[fname]["log_display"]
+        widget.setText(open(fname).read())
+        widget.verticalScrollBar().setValue(
+            widget.verticalScrollBar().maximum()
+        )
 
 
 class AboutUi(common.BaseDialogUi):
@@ -989,9 +701,9 @@ class AboutUi(common.BaseDialogUi):
         self.ui = ui_about.Ui_About()
         self.ui.setupUi(self)
 
-        about_html = open(gremlin.util.resource_path("about/about.html")).read()
-        about_html = about_html.replace("{VERSION}", gremlin.version.get_version())
-        self.ui.about.setHtml(about_html)
+        self.ui.about.setHtml(
+            open(gremlin.util.resource_path("about/about.html")).read()
+        )
 
         self.ui.jg_license.setHtml(
             open(gremlin.util.resource_path("about/joystick_gremlin.html")).read()
@@ -1457,8 +1169,8 @@ class SwapDevicesUi(common.BaseDialogUi):
         geom = root.geometry()
 
         self.input_dialog.setGeometry(
-            geom.x() + geom.width() // 2 - 150,
-            geom.y() + geom.height() // 2 - 75,
+            geom.x() + geom.width() / 2 - 150,
+            geom.y() + geom.height() / 2 - 75,
             300,
             150
         )

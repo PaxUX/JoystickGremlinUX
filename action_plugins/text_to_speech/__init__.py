@@ -17,7 +17,7 @@
 
 
 import os
-from PyQt5 import QtWidgets
+from PyQt5 import QtWidgets, QtCore
 from xml.etree import ElementTree
 
 from gremlin.base_classes import AbstractAction, AbstractFunctor
@@ -38,6 +38,17 @@ class TextToSpeechWidget(gremlin.ui.input_item.AbstractActionWidget):
         self.text_field.textChanged.connect(self._content_changed_cb)
         self.main_layout.addWidget(self.text_field)
 
+        self.play_button = QtWidgets.QPushButton("PLAY")
+        self.play_button.clicked.connect(self._play_test)
+        self.main_layout.addWidget(self.play_button)
+
+    def _play_test(self):
+        """Test TTS playback using the text currently in the text field."""
+        text = self.text_field.toPlainText()
+        if not text:
+            return
+        gremlin.tts.TextToSpeech().speak(gremlin.tts.text_substitution(text))
+
     def _content_changed_cb(self):
         self.action_data.text = self.text_field.toPlainText()
 
@@ -47,14 +58,15 @@ class TextToSpeechWidget(gremlin.ui.input_item.AbstractActionWidget):
 
 class TextToSpeechFunctor(AbstractFunctor):
 
-    tts = gremlin.tts.TextToSpeech()
+    """Functor that speaks text via the configured TTS backend."""
 
     def __init__(self, action):
         super().__init__(action)
         self.text = action.text
+        self._tts = gremlin.tts.TextToSpeech()
 
     def process_event(self, event, value):
-        TextToSpeechFunctor.tts.speak(gremlin.tts.text_substitution(self.text))
+        self._tts.speak(gremlin.tts.text_substitution(self.text))
         return True
 
 

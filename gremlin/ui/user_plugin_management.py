@@ -282,7 +282,7 @@ class ModuleManagementView(QtWidgets.QSplitter):
         fname, _ = QtWidgets.QFileDialog.getOpenFileName(
             None,
             "Path to Python plugin",
-            "C:\\",
+            "~/Joystick Gremlin",
             "Python (*.py)"
         )
         self.add_module.emit(fname)

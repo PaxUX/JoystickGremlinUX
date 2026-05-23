@@ -16,6 +16,7 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 
+import logging
 import os
 from xml.etree import ElementTree
 
@@ -26,6 +27,9 @@ from gremlin.common import InputType
 from gremlin.input_devices import ButtonReleaseActions
 import gremlin.ui.common
 import gremlin.ui.input_item
+import gremlin.key_inject
+
+logger = logging.getLogger("system")
 
 
 class MapToKeyboardWidget(gremlin.ui.input_item.AbstractActionWidget):
@@ -87,8 +91,8 @@ class MapToKeyboardWidget(gremlin.ui.input_item.AbstractActionWidget):
         geom = root.geometry()
 
         self.button_press_dialog.setGeometry(
-            geom.x() + geom.width() / 2 - 150,
-            geom.y() + geom.height() / 2 - 75,
+            geom.x() + geom.width() // 2 - 150,
+            geom.y() + geom.height() // 2 - 75,
             300,
             150
         )
@@ -99,27 +103,35 @@ class MapToKeyboardFunctor(AbstractFunctor):
 
     def __init__(self, action):
         super().__init__(action)
-        self.press = gremlin.macro.Macro()
+        self.press_macro = gremlin.macro.Macro()
+        self.release_macro = gremlin.macro.Macro()
+        self._keys: list[tuple[int, bool]] = []
         self.needs_auto_release = True
         for key in action.keys:
-            self.press.press(gremlin.macro.key_from_code(key[0], key[1]))
-
-        self.release = gremlin.macro.Macro()
-        # Execute release in reverse order
-        for key in reversed(action.keys):
-            self.release.release(gremlin.macro.key_from_code(key[0], key[1]))
+            self.press_macro.press(gremlin.macro.key_from_code(key[0], key[1]))
+            self.release_macro.release(gremlin.macro.key_from_code(key[0], key[1]))
+            self._keys.append(key)
 
     def process_event(self, event, value):
         if value.current:
-            gremlin.macro.MacroManager().queue_macro(self.press)
+            gremlin.macro.MacroManager().queue_macro(self.press_macro)
 
             if self.needs_auto_release:
                 ButtonReleaseActions().register_callback(
-                    lambda: gremlin.macro.MacroManager().queue_macro(self.release),
+                    lambda: gremlin.macro.MacroManager().queue_macro(self.release_macro),
                     event
                 )
         else:
-            gremlin.macro.MacroManager().queue_macro(self.release)
+            # Button UP: use direct key_inject for instant release.
+            # Skipping MacroManager avoids the executor thread race and
+            # 100ms _default_delay that previously kept the key stuck.
+            for key_tuple in self._keys:
+                vk = gremlin.macro.key_from_code(key_tuple[0], key_tuple[1])._vk_code
+                gremlin.key_inject.inject_key_up(vk)
+                logger.info(
+                    "[MAP_TO_KB] Direct UP: VK 0x%02X via key_inject",
+                    vk
+                )
         return True
 
 

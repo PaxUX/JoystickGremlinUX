@@ -287,6 +287,54 @@ class InputItemListView(common.AbstractView):
         if emit_signal and valid_index:
             self.item_selected.emit(index)
 
+        # Auto-scroll the scrollbar so the highlighted button is visible
+        if valid_index:
+            self._scroll_to_index(index)
+
+    def _scroll_to_index(self, index):
+        """Scroll the scroll area so the item at the given index is centred in view.
+
+        Works purely with scroll content coordinates — no mapTo() needed and no
+        dependency on the tab being visible.
+        """
+        if self.scroll_area is None:
+            return
+
+        widget = self.scroll_layout.itemAt(index).widget()
+        if widget is None:
+            return
+
+        scrollbar = self.scroll_area.verticalScrollBar()
+        if scrollbar is None:
+            return
+
+        # Total scrollable range
+        max_scroll = scrollbar.maximum() or self.scroll_widget.height() - 1
+        # Viewport height (approximate)
+        vh = max(1, self.scroll_area.height())
+
+        # Get the exact geometry of the widget in the scroll-widget's coord space
+        item = self.scroll_layout.itemAt(index)
+        if not item:
+            return
+        geometry = item.geometry()
+        if geometry.height() <= 0:
+            return
+
+        widget_bottom = geometry.y() + geometry.height()
+        page_h = max(1, vh)
+
+        if geometry.y() < scrollbar.value():
+            # Widget is entirely above current view
+            scrollbar.setValue(geometry.y())
+        elif widget_bottom > scrollbar.value() + page_h:
+            # Widget is entirely below current view
+            scrollbar.setValue(max(0, widget_bottom - page_h))
+        else:
+            # Inside view → centre it
+            mid = geometry.y() + geometry.height() // 2
+            scrollbar.setValue(max(0, min(mid - page_h // 2, max_scroll - page_h)))
+
 
 class ActionSetModel(common.AbstractModel):
 

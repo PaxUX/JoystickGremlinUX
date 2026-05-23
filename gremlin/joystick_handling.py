@@ -17,12 +17,17 @@
 
 
 import logging
+import sys
 import threading
 
 import dill
 
 from . import common, error, util
-from vjoy import vjoy
+
+# vJoy is imported from vjoy/ which re-exports the platform-appropriate
+# backend (Windows DLL or Linux uinput). We extract the submodule so that
+# callers use vJoy.device_exists(), vJoy.VJoy(), vJoy.VJoyState, etc.
+from vjoy import vjoy  # noqa: F401
 
 
 # List of all joystick devices
@@ -86,7 +91,9 @@ def vjoy_devices():
 
     :return list of vJoy devices
     """
-    return [dev for dev in _joystick_devices if dev.is_virtual]
+    # Exclude unassigned devices (vjoy_id == -1) — they have no valid
+    # device identifier and must not surface to any UI or runtime path.
+    return [dev for dev in _joystick_devices if dev.is_virtual and dev.vjoy_id > 0]
 
 
 def physical_devices():
@@ -259,53 +266,95 @@ def joystick_devices_initialization():
     # their matching SDL counterparts have been found.
     vjoy_proxy = VJoyProxy()
     should_terminate = False
-    for i in range(1, 17):
-        # Only process devices that actually exist
-        if not vjoy.device_exists(i):
-            continue
+    assigned = set()
 
-        # Compute a hash for the vJoy device and match it against the SDL
-        # device hashes
-        hash_value = (
-            vjoy.axis_count(i),
-            vjoy.button_count(i),
-            vjoy.hat_count(i)
-        )
+    if sys.platform == 'linux':
+        # On Linux SDL maps the vJoy device via its axis/button capabilities
+        # (generic HID mapping), not by VID/PID.  Hash-based matching is
+        # fundamentally incompatible on Linux — instead we assign vJoy IDs
+        # directly in order of discovery.
+        for i in range(1, 17):
+            if not vjoy.device_exists(i):
+                continue
 
-        if not vjoy.hat_configuration_valid(i):
-            error_string = "vJoy id {:d}: Hats are set to discrete but have " \
-                           "to be set as continuous.".format(i)
-            syslog.debug(error_string)
-            util.display_error(error_string)
+            if not vjoy.hat_configuration_valid(i):
+                error_string = "vJoy id {:d}: Hats are set to discrete but have " \
+                               "to be set as continuous.".format(i)
+                syslog.debug(error_string)
+                util.display_error(error_string)
 
-        # As we are ensured that no duplicate vJoy devices exist from
-        # the previous step we can directly link the SDL and vJoy device
-        if hash_value in vjoy_lookup:
-            vjoy_lookup[hash_value].set_vjoy_id(i)
-            syslog.debug("vjoy id {:d}: {} - MATCH".format(i, hash_value))
-        else:
-            should_terminate = True
-            syslog.debug(
-                "vjoy id {:d}: {} - ERROR - vJoy device exists "
-                "but DILL does not see it".format(i, hash_value)
+            # Assign the next unassigned SDL virtual device
+            unassigned = [dev for dev in vjoy_lookup.values() if dev.vjoy_id == -1]
+            if unassigned:
+                unassigned[0].set_vjoy_id(i)
+                assigned.add(i)
+                syslog.debug("vjoy id {:d}: direct ASSIGN (Linux)".format(i))
+                # On Linux the vJoy device only survives while the FD is open.
+                # Acquiring it through the proxy keeps it alive for the app lifetime.
+                try:
+                    vjoy_proxy[i]  # keeps vJoy device #i alive
+                except error.VJoyError as e:
+                    syslog.debug("vJoy id {:} can't be acquired".format(i))
+
+        # On Linux we do NOT call reset() because it calls invalidate() which
+        # destroys the uinput device (UI_DEV_DESTROY).  The device was created
+        # pre-scan in joystick_gremlin.py and must survive for the app lifetime.
+
+    else:
+        # Windows path: preserve original hash-based matching logic.
+        for i in range(1, 17):
+            # Only process devices that actually exist
+            if not vjoy.device_exists(i):
+                continue
+
+            # Compute a hash for the vJoy device and match it against the SDL
+            # device hashes
+            hash_value = (
+                vjoy.axis_count(i),
+                vjoy.button_count(i),
+                vjoy.hat_count(i)
             )
 
-        # If the device can be acquired, configure the mapping from
-        # vJoy axis id, which may not be sequential, to the
-        # sequential SDL axis id
-        if hash_value in vjoy_lookup:
-            try:
-                vjoy_dev = vjoy_proxy[i]
-            except error.VJoyError as e:
-                syslog.debug("vJoy id {:} can't be acquired".format(i))
+            if not vjoy.hat_configuration_valid(i):
+                error_string = "vJoy id {:d}: Hats are set to discrete but have " \
+                               "to be set as continuous.".format(i)
+                syslog.debug(error_string)
+                util.display_error(error_string)
 
-    if should_terminate:
+            # As we are ensured that no duplicate vJoy devices exist from
+            # the previous step we can directly link the SDL and vJoy device
+            if hash_value in vjoy_lookup:
+                vjoy_lookup[hash_value].set_vjoy_id(i)
+                syslog.debug("vjoy id {:d}: {} - MATCH".format(i, hash_value))
+            else:
+                should_terminate = True
+                syslog.debug(
+                    "vjoy id {:d}: {} - ERROR - vJoy device exists "
+                    "but DILL does not see it".format(i, hash_value)
+                )
+
+            # If the device can be acquired, configure the mapping from
+            # vJoy axis id, which may not be sequential, to the
+            # sequential SDL axis id
+            if hash_value in vjoy_lookup:
+                try:
+                    vjoy_dev = vjoy_proxy[i]
+                except error.VJoyError as e:
+                    syslog.debug("vJoy id {:} can't be acquired".format(i))
+
+    # Only raise this error if there are vJoy devices but they couldn't be matched on Windows.
+    if vjoy_lookup and should_terminate:
         raise error.GremlinError(
             "Unable to match vJoy devices to windows devices."
         )
 
-    # Reset all devices so we don't hog the ones we aren't actually using
-    vjoy_proxy.reset()
+    # On Linux the vJoy device was created pre-scan (joystick_gremlin.py) to
+    # survive for the app lifetime.  Calling VJoyProxy.reset() would destroy
+    # the uinput device (UI_DEV_DESTROY).  The device stays alive because its
+    # FD is never closed; it will be released when the process exits.
+    if sys.platform != 'linux':
+        # Reset all devices so we don't hog the ones we aren't actually using
+        vjoy_proxy.reset()
 
     # Update device list which will be used when queries for joystick devices
     # are made

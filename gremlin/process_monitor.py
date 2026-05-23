@@ -20,12 +20,97 @@ import ctypes.wintypes
 import os
 import time
 import threading
+import sys
 
 from PyQt5 import QtCore
 
-import win32gui
-import win32process
+# ========== Linux stubs for pywin32 imports ==========
 
+win32gui = None
+win32process = None
+_OPENHANDLE = 0
+_QUERYFULLPROCESSIMAGENA = None
+_CLOSEHANDLE = 0
+
+if sys.platform == "win32":
+    try:
+        import win32gui as _wgui
+        import win32process as _wproc
+        win32gui = _wgui
+        win32process = _wproc
+
+        _kernel32 = ctypes.windll.kernel32
+
+        # PROQUERYSIZE constants
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+
+        # Load OpenProcess, QueryFullProcessImageNameA, CloseHandle
+
+        class QUERYFULLPROCESSIMAGENA_CTYPES(ctypes.Structure):
+            _fields_ = [("FileName", ctypes.c_char * 1024)]
+
+        _OPENHANDLE = getattr(_kernel32, "OpenProcess", None)
+        _QUERYFULLPROCESSIMAGENA = getattr(_kernel32, "QueryFullProcessImageNameA", None)
+        _CLOSEHANDLE = getattr(_kernel32, "CloseHandle", None)
+    except ImportError:
+        pass
+else:
+    # Linux stubs: kernel32 methods
+    PROCESS_QUERY_LIMITED_INFORMATION = 0
+
+    # stub _buffer as a class attribute so ProcessMonitor can still access it
+    class _kernel32_stub:
+        pass
+
+    kernel32 = _kernel32_stub()
+
+
+# ========= Helper: resolve active foreground window PID / process name =========
+
+def _get_foreground_process_name():
+    """Return the path to the active foreground executable, or empty string."""
+    if sys.platform == "win32" and win32gui is not None:
+        try:
+            hwnd = win32gui.GetForegroundWindow()
+            _, pid = win32process.GetWindowThreadProcessId(hwnd)
+
+            h = _OPENHANDLE(
+                PROCESS_QUERY_LIMITED_INFORMATION, False, pid
+            )
+            if h:
+                buf = ctypes.create_string_buffer(1024)
+                size = ctypes.wintypes.DWORD(1024)
+                _QUERYFULLPROCESSIMAGENA(h, 0, buf, ctypes.byref(size))
+                _CLOSEHANDLE(h)
+                path = os.path.normpath(buf.value.decode("utf-8", "ignore"))
+                return path.replace("\\", "/")
+        except Exception:
+            pass
+    else:
+        # Linux: read from /proc
+        try:
+            # Try to determine /proc-based foreground window name via wmctrl or xdotool
+            import subprocess
+            try:
+                proc = subprocess.run(
+                    ["xdotool", "getactivewindow", "getwindowpid"],
+                    capture_output=True, text=True, timeout=2
+                )
+                pid = int(proc.stdout.strip())
+                exe = ""
+                if os.path.exists(f"/proc/{pid}/exe"):
+                    exe = os.path.realpath(f"/proc/{pid}/exe")
+                if exe:
+                    return exe
+            except (FileNotFoundError, Exception):
+                pass
+        except Exception:
+            pass
+
+    return ""
+
+
+# ========= ProcessMonitor (Qt QObject) =========
 
 class ProcessMonitor(QtCore.QObject):
 
@@ -43,13 +128,13 @@ class ProcessMonitor(QtCore.QObject):
     PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 
     # kernel32.dll library handle
-    kernel32 = ctypes.windll.kernel32
+    kernel32 = ctypes.windll.kernel32 if sys.platform == "win32" else None
 
     def __init__(self):
         """Creates a new instance."""
         QtCore.QObject.__init__(self)
-        self._buffer = ctypes.create_string_buffer(1024)
-        self._buffer_size = ctypes.wintypes.DWORD(1024)
+        self._buffer = ctypes.create_string_buffer(1024) if sys.platform == "win32" else None
+        self._buffer_size = ctypes.wintypes.DWORD(1024) if sys.platform == "win32" else None
         self._current_path = ""
         self._current_pid = -1
         self.running = False
@@ -59,9 +144,7 @@ class ProcessMonitor(QtCore.QObject):
         """Starts monitoring the current process."""
         if not self.running:
             self.running = True
-            self._update_thread = threading.Thread(
-                target=self._update
-            )
+            self._update_thread = threading.Thread(target=self._update)
             self._update_thread.start()
 
     def stop(self):
@@ -73,31 +156,39 @@ class ProcessMonitor(QtCore.QObject):
     def _update(self):
         """Monitors the active process for changes."""
         while self.running:
-            _, pid = win32process.GetWindowThreadProcessId(
-                win32gui.GetForegroundWindow()
-            )
+            try:
+                current_path = _get_foreground_process_name() or ""
 
-            if pid != self._current_pid:
-                self._current_pid = pid
-                handle = ProcessMonitor.kernel32.OpenProcess(
-                    ProcessMonitor.PROCESS_QUERY_LIMITED_INFORMATION,
-                    False,
-                    pid
-                )
+                # On Windows we also use the old PID-based approach
+                if sys.platform == "win32" and win32gui is not None:
+                    hwnd = win32gui.GetForegroundWindow()
+                    _, pid = win32process.GetWindowThreadProcessId(hwnd)
+                    if pid != self._current_pid:
+                        self._current_pid = pid
+                        handle = self.kernel32.OpenProcess(
+                            ProcessMonitor.PROCESS_QUERY_LIMITED_INFORMATION,
+                            False,
+                            pid
+                        )
 
-                self._buffer_size = ctypes.wintypes.DWORD(1024)
-                ProcessMonitor.kernel32.QueryFullProcessImageNameA(
-                    handle,
-                    0,
-                    self._buffer,
-                    ctypes.byref(self._buffer_size)
-                )
-                ProcessMonitor.kernel32.CloseHandle(handle)
+                        self._buffer_size = ctypes.wintypes.DWORD(1024)
+                        self.kernel32.QueryFullProcessImageNameA(
+                            handle,
+                            0,
+                            self._buffer,
+                            ctypes.byref(self._buffer_size)
+                        )
+                        self.kernel32.CloseHandle(handle)
 
-                self._current_path = os.path.normpath(
-                    str(self._buffer.value)[2:-1]
-                ).replace("\\", "/")
-                self.process_changed.emit(self.current_path)
+                        current_path = os.path.normpath(
+                            str(self._buffer.value)[2:-1]
+                        ).replace("\\", "/")
+
+                if current_path != self._current_path:
+                    self._current_path = current_path
+                    self.process_changed.emit(self._current_path)
+            except Exception:
+                pass
 
             time.sleep(1.0)
 
@@ -110,17 +201,37 @@ class ProcessMonitor(QtCore.QObject):
         return self._current_path
 
 
+# ========= list_current_processes =========
+
 def list_current_processes():
     """Returns a list of executable paths to currently active processes.
 
     :return list of active process executable paths
     """
-    from win32com.client import GetObject
-    wmi = GetObject('winmgmts:')
-    processes = wmi.InstancesOf("Win32_Process")
+    if sys.platform == "win32":
+        try:
+            from win32com.client import GetObject
+            wmi = GetObject('winmgmts:')
+            processes = wmi.InstancesOf("Win32_Process")
+            process_list = []
+            for entry in processes:
+                executable = entry.Properties_("ExecutablePath").Value
+                if executable is not None:
+                    process_list.append(os.path.normpath(executable).replace("\\", "/"))
+            return sorted(set(process_list))
+        except ImportError:
+            pass
+
+    # Linux: use /proc
     process_list = []
-    for entry in processes:
-        executable = entry.Properties_("ExecutablePath").Value
-        if executable is not None:
-            process_list.append(os.path.normpath(executable).replace("\\", "/"))
+    for pid_dir in os.listdir("/proc"):
+        if not pid_dir.isdigit():
+            continue
+        try:
+            exe_path = os.path.realpath(os.path.join("/proc", pid_dir, "exe"))
+            if exe_path != "/proc/self/exe":
+                process_list.append(exe_path)
+        except (PermissionError, FileNotFoundError, OSError):
+            # PID may have exited, or /proc/NNN/exe is unreadable (e.g., root-only)
+            continue
     return sorted(set(process_list))

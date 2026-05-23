@@ -363,7 +363,10 @@ class JoystickWrapper:
         :return list of JoystickWrapper.Axis objects
         """
         axes = {}
-        for i in range(self._info.axis_count):
+        # FIX: Use min(axis_count, len(axis_map)) to prevent OOB when
+        # axis_count > axis_map capacity (e.g., vJoy configured with >8 axes
+        # or profiles loaded with stale axis_count values)
+        for i in range(min(self._info.axis_count, len(self._info.axis_map))):
             aid = self._info.axis_map[i].axis_index
             axes[aid] = JoystickWrapper.Axis(self._device_guid, aid)
         return axes
@@ -591,14 +594,15 @@ class ButtonReleaseActions(QtCore.QObject):
             released
         :param physical_event the physical event of the button being pressed
         """
-        release_evt = physical_event.clone()
-        release_evt.is_pressed = False
+        key = self._registry_key(physical_event)
+        if key is None:
+            return
 
-        if release_evt not in self._registry:
-            self._registry[release_evt] = []
+        if key not in self._registry:
+            self._registry[key] = []
         # Do not record the mode since we may want to run the release action
         # independent of a mode
-        self._registry[release_evt].append((callback, None))
+        self._registry[key].append((callback, None))
 
     def register_button_release(self, vjoy_input, physical_event):
         """Registers a physical and vjoy button pair for tracking.
@@ -612,13 +616,14 @@ class ButtonReleaseActions(QtCore.QObject):
         :param physical_event the button event when release should
             trigger the release of the vjoy button
         """
-        release_evt = physical_event.clone()
-        release_evt.is_pressed = False
+        key = self._registry_key(physical_event)
+        if key is None:
+            return
 
-        if release_evt not in self._registry:
-            self._registry[release_evt] = []
+        if key not in self._registry:
+            self._registry[key] = []
         # Record current mode so we only release if we've changed mode
-        self._registry[release_evt].append((
+        self._registry[key].append((
             lambda: self._create_release_callback(vjoy_input),
             self._current_mode
         ))
@@ -640,15 +645,31 @@ class ButtonReleaseActions(QtCore.QObject):
                     vjoy_input[0], vjoy_input[1])
             )
 
+    def _registry_key(self, evt):
+        """Build a plain tuple key from an event so that down and up events
+        of the same physical button share the SAME lookup bucket (for lookup),
+        but we can still distinguish them by is_pressed value."""
+        if evt.event_type in (
+            common.InputType.JoystickButton,
+            common.InputType.JoystickAxis,
+            common.InputType.JoystickHat,
+        ):
+            return (str(evt.device_guid), evt.event_type.value, evt.identifier)
+        if evt.event_type == common.InputType.Keyboard:
+            return (str(evt.device_guid), evt.event_type.value, evt.identifier)
+        return None
+
     def _input_event_cb(self, evt):
         """Runs callbacks associated with the given event.
 
         :param evt the event to process
         """
-        if evt in self._registry and not evt.is_pressed:
-            for entry in self._registry[evt]:
-                entry[0]()
-            self._registry[evt] = []
+        if not evt.is_pressed:
+            key = self._registry_key(evt)
+            if key is not None and key in self._registry:
+                for entry in self._registry[key]:
+                    entry[0]()
+                self._registry[key] = []
 
     def _mode_changed_cb(self, mode):
         """Updates the current mode variable.
@@ -718,7 +739,7 @@ class JoystickInputSignificant:
             # Update state
             else:
                 self._time_registry[event] = time.time()
-                if abs(self._event_registry[event].value - event.value) > 0.25:
+                if abs(self._event_registry[event].value - event.value) > 0.01:  # Dead zone
                     self._event_registry[event] = event
                     self._time_registry[event] = time.time()
                     return True

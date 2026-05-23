@@ -28,11 +28,65 @@ import sys
 import time
 import traceback
 
-# Import QtMultimedia so pyinstaller doesn't miss it
+
+# Hardover Ride of Wayland as it cause a lots of issue if trying to run as natvie
+os.environ["QT_QPA_PLATFORM"] = "xcb"
+
+
+
+# [Linux Stub] Force native Wayland/X11 detection
+# Prevents Qt from auto-selecting XCB on Wayland and ensures native HiDPI.
+# Unsets DISPLAY under Wayland so Qt's platform plugin attaches to
+# $WAYLAND_DISPLAY unambiguously.
+from gremlin import common
+if sys.platform.startswith("linux"):
+    _session = os.environ.get("XDG_SESSION_TYPE", "").lower()
+    _wayland = os.environ.get("WAYLAND_DISPLAY")
+    _x11 = os.environ.get("DISPLAY")
+    
+    # Set the global display server variable for all modules to query
+    if not os.environ.get("QT_QPA_PLATFORM"):  # respect user override
+        if _session == "wayland" or (_wayland and _session != "x11"):
+            os.environ["QT_QPA_PLATFORM"] = "wayland"
+            if "DISPLAY" in os.environ:
+                del os.environ["DISPLAY"]
+            common.current_display_server = common.DisplayServer.Wayland
+            _detected = "wayland"
+            _source = "auto-detected"
+        elif _session == "x11" or (_x11 and not _wayland):
+            os.environ["QT_QPA_PLATFORM"] = "xcb"
+            common.current_display_server = common.DisplayServer.X11
+            _detected = "xcb"
+            _source = "auto-detected"
+        else:
+            common.current_display_server = common.DisplayServer.Unset
+            _detected = "unset"
+            _source = "unset (Qt default)"
+    else:
+        common.current_display_server = common.DisplayServer.X11 if os.environ.get("QT_QPA_PLATFORM") == "xcb" else common.DisplayServer.Wayland
+        _detected = os.environ["QT_QPA_PLATFORM"]
+        _source = "user override"
+    _session_type = _session or "unknown"
+
+    # Report to the user
+    sys.stderr.write('[JG-ENV] Session: {type} — Qt platform: {platform} [{source}]\n'.format(
+        type=_session_type, platform=_detected, source=_source
+    ))
+    sys.stderr.write('=' * 80 + '\n')
+
 import PyQt5
 from PyQt5 import QtCore, QtGui, QtMultimedia, QtWidgets
 
 import dill
+
+# On Linux, import the uinput vJoy interface directly to avoid circular imports
+# through gremlin.joystick_handling → vjoy → gremlin.joystick_handling (deadlock)
+if sys.platform.startswith("linux"):
+    import vjoy_linux.vjoy_interface as _vjoy_interface
+
+# Linux: completely disable vJoy requirement since no Windows driver exists
+# This flag prevents the vJoy check from blocking boot on Linux
+_VJOY_REQUIRED = True if sys.platform.startswith("win32") else False
 
 # Figure out the location of the code / executable and change the working
 # directory accordingly
@@ -56,12 +110,13 @@ class GremlinUi(QtWidgets.QMainWindow):
 
     """Main window of the Joystick Gremlin user interface."""
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, vJoyInputTabsEnabled=False):
         """Creates a new main ui window.
 
         :param parent the parent of this window
         """
         QtWidgets.QMainWindow.__init__(self, parent)
+        self.vJoyInputTabsEnabled = vJoyInputTabsEnabled
         self.ui = Ui_Gremlin()
         self.ui.setupUi(self)
 
@@ -127,10 +182,13 @@ class GremlinUi(QtWidgets.QMainWindow):
         # Enable reloading for when a user connects / disconnects a
         # device. Sleep for a bit to avert race with devices being added
         # when they already exist.
-        el = gremlin.event_handler.EventListener()
+        self._event_listener = gremlin.event_handler.EventListener()
         time.sleep(0.1)
-        el._init_joysticks()
-        el.device_change_event.connect(self._device_change_cb)
+        self._event_listener._init_joysticks()
+        self._event_listener.device_change_event.connect(self._device_change_cb)
+        # Emit initial device update so tabs are populated at startup
+        # (device_change_event is only emitted on plug/unplug normally)
+        self._event_listener._run_device_list_update()
 
         self.apply_user_settings()
         self.apply_window_settings()
@@ -200,8 +258,8 @@ class GremlinUi(QtWidgets.QMainWindow):
             gremlin.ui.dialogs.DeviceInformationUi()
         geom = self.geometry()
         self.modal_windows["device_information"].setGeometry(
-            geom.x() + geom.width() / 2 - 150,
-            geom.y() + geom.height() / 2 - 75,
+            int(geom.x() + geom.width() / 2 - 150),
+            int(geom.y() + geom.height() / 2 - 75),
             300,
             150
         )
@@ -281,8 +339,8 @@ class GremlinUi(QtWidgets.QMainWindow):
             gremlin.ui.dialogs.SwapDevicesUi(self._profile)
         geom = self.geometry()
         self.modal_windows["swap_devices"].setGeometry(
-            geom.x() + geom.width() / 2 - 150,
-            geom.y() + geom.height() / 2 - 75,
+            int(geom.x() + geom.width() / 2 - 150),
+            int(geom.y() + geom.height() / 2 - 75),
             300,
             150
         )
@@ -297,9 +355,19 @@ class GremlinUi(QtWidgets.QMainWindow):
     def _remove_modal_window(self, name):
         """Removes the modal window widget from the system.
 
+        Properly closes and schedules deletion of the window to avoid
+        stale Qt resources (timers, painters, Wayland proxies) that
+        trigger warnings such as:
+          "queue ... destroyed while proxies still attached"
+
         :param name the name of the modal window to remove
         """
-        del self.modal_windows[name]
+        window = self.modal_windows.pop(name, None)
+        if window is None:
+            return
+
+        window.close()
+        window.deleteLater()
 
     # +---------------------------------------------------------------
     # | Action implementations
@@ -399,8 +467,8 @@ class GremlinUi(QtWidgets.QMainWindow):
             gremlin.ui.input_viewer.InputViewerUi()
         geom = self.geometry()
         self.modal_windows["input_viewer"].setGeometry(
-            geom.x() + geom.width() / 2 - 350,
-            geom.y() + geom.height() / 2 - 150,
+            int(geom.x() + geom.width() / 2 - 350),
+            int(geom.y() + geom.height() / 2 - 150),
             700,
             300
         )
@@ -582,7 +650,6 @@ class GremlinUi(QtWidgets.QMainWindow):
         self.ui.tray_icon = QtWidgets.QSystemTrayIcon()
         self.ui.tray_icon.setIcon(QtGui.QIcon("gfx/icon.ico"))
         self.ui.tray_icon.setContextMenu(self.ui.tray_menu)
-        self.ui.tray_icon.show()
 
     def _create_tabs(self, activate_tab=None):
         """Creates the tabs of the configuration dialog representing
@@ -597,6 +664,13 @@ class GremlinUi(QtWidgets.QMainWindow):
 
         # Create physical joystick device tabs
         for device in sorted(phys_devices, key=lambda x: x.name):
+            #print(f"vJoy={self.vJoyInputTabsEnabled} Pax: Physical: {device.name}")
+            #Filter out the Virtual Deivces DILL created during startup:    
+            if not self.vJoyInputTabsEnabled:
+                if device.name.startswith("vJoy Linux"):
+                    continue
+
+
             device_profile = self._profile.get_device_modes(
                 device.device_guid,
                 gremlin.profile.DeviceType.Joystick,
@@ -615,6 +689,7 @@ class GremlinUi(QtWidgets.QMainWindow):
         # Create vJoy as input device tabs
         for device in sorted(vjoy_devices, key=lambda x: x.vjoy_id):
             # Ignore vJoy as output devices
+
             if not self._profile.settings.vjoy_as_input.get(device.vjoy_id, False):
                 continue
 
@@ -813,9 +888,8 @@ class GremlinUi(QtWidgets.QMainWindow):
         """Handles changes in the active process.
 
         If the active process has a known associated profile it is
-        loaded and activated. If none exists and the user has not
-        enabled the option to keep the last profile active, the current
-        profile is disabled,
+        loaded and activated if none exists the application is
+        disabled.
 
         :param path the path to the currently active process executable
         """
@@ -828,7 +902,7 @@ class GremlinUi(QtWidgets.QMainWindow):
             self.ui.actionActivate.setChecked(True)
             self.activate(True)
             self._profile_auto_activated = True
-        elif self._profile_auto_activated and not self.config.keep_last_autoload:
+        elif self._profile_auto_activated:
             self.ui.actionActivate.setChecked(False)
             self.activate(False)
             self._profile_auto_activated = False
@@ -892,6 +966,36 @@ class GremlinUi(QtWidgets.QMainWindow):
         if self.config.activate_on_launch:
             self.ui.actionActivate.setChecked(True)
             self.activate(True)
+
+    def _deferred_boot(self) -> None:
+        """Defer showing the UI until the first event-loop iteration.
+
+        On Wayland, calling ``QSystemTrayIcon.show()`` and
+        ``QMainWindow.show()`` before ``exec_()`` causes the compositor
+        to reject programmatic focus requests, producing massive log spam
+        (see ``requestActivate() rejected by Wayland compositor``).
+
+        By using ``QTimer.singleShot(0, ...)`` we delay visibility until
+        the event loop is running — at which point the compositor allows
+        it and no spam is produced.
+        """
+        if sys.platform.startswith("linux"):
+            logger = logging.getLogger("system")
+            self.ui.tray_icon.show()
+            self.show()
+            if self.config.start_minimized:
+                self.setHidden(True)
+            if self.config.autoload_profiles:
+                self.process_monitor.start()
+            logger.info("[LinuxActivation] UI shown on first event-loop iteration")
+        else:
+            # Windows path — show normally
+            self.ui.tray_icon.show()
+            self.show()
+            if self.config.start_minimized:
+                self.setHidden(True)
+            if self.config.autoload_profiles:
+                self.process_monitor.start()
 
     def apply_window_settings(self):
         """Restores the stored window geometry settings."""
@@ -1042,7 +1146,7 @@ class GremlinUi(QtWidgets.QMainWindow):
         if self._profile_fname is None:
             return True
         else:
-            tmp_path = os.path.join(os.getenv("temp"), "gremlin.xml")
+            tmp_path = os.path.join(gremlin.util.get_temp_dir(), "gremlin.xml")
             self._profile.to_xml(tmp_path)
             current_sha = hashlib.sha256(
                 open(tmp_path).read().encode("utf-8")
@@ -1143,7 +1247,9 @@ class GremlinUi(QtWidgets.QMainWindow):
         # Check if we should actually react to the event
         if event == self._last_input_event:
             return False
-        elif self._last_input_timestamp + 0.25 > time.time():
+        # [LATE-4] Reduced cooldown to 50ms for responsive game-tap feel.
+        # Original (overly slow): 0.25
+        elif self._last_input_timestamp + 0.05 > time.time():
             return False
         elif not process_input:
             return False
@@ -1172,15 +1278,28 @@ class GremlinUi(QtWidgets.QMainWindow):
             self.setWindowTitle("")
 
 
-def configure_logger(config):
+def configure_logger(config, console_level=None):
     """Creates a new logger instance.
 
     :param config configuration information for the new logger
+    :param console_level override the console handler level.
+        When None, uses config["level"]. Set this to WARNING (default),
+        INFO, or DEBUG (verbose mode) via --verbose flag.
+        File logging always captures at config["level"] (DEBUG) for debugging.
     """
     logger = logging.getLogger(config["name"])
-    logger.setLevel(config["level"])
+    logger.setLevel(logging.DEBUG)  # Logger itself always accepts everything
+
+    # Console handler (stdout) — so log output is visible in terminal
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setLevel(console_level if console_level is not None else config["level"])
+    console_formatter = logging.Formatter("%(asctime)s [%(name)s] %(levelname)s: %(message)s")
+    console_handler.setFormatter(console_formatter)
+    logger.addHandler(console_handler)
+
+    # File handler — persistent log for debugging, always at DEBUG
     handler = logging.FileHandler(config["logfile"])
-    handler.setLevel(config["level"])
+    handler.setLevel(logging.DEBUG)
     formatter = logging.Formatter(config["format"], "%Y-%m-%d %H:%M:%S")
     handler.setFormatter(formatter)
     logger.addHandler(handler)
@@ -1220,7 +1339,20 @@ if __name__ == "__main__":
         help="Start Joystick Gremlin minimized",
         action="store_true"
     )
-    args = parser.parse_args()
+    parser.add_argument(
+        "-v", "--verbose",
+        help="Enable verbose (DEBUG) console logging. Default is WARNING level.",
+        action="store_true"
+    )
+    parser.add_argument(
+        "-j", "--joy",
+        help="Enable vJoy input device tabs",
+        action="store_true"
+    )
+    try:
+        args = parser.parse_args()
+    except SystemExit:
+        os._exit(0)  # Handles -h gracefully without hanging
 
     # Path manging to ensure Gremlin starts independent of the CWD
     sys.path.insert(0, gremlin.util.userprofile_path())
@@ -1233,18 +1365,23 @@ if __name__ == "__main__":
     ))
 
     # Configure logging for system and user events
+    # Console verbosity is controlled by --verbose / -v flag:
+    #   default (no flag): WARNING — only warnings/errors on console
+    #   --verbose: DEBUG — full debug output on console
+    # File handlers always capture at DEBUG for post-mortem debugging.
+    console_log_level = logging.DEBUG if args.verbose else logging.WARNING
     configure_logger({
         "name": "system",
         "level": logging.DEBUG,
         "logfile": os.path.join(gremlin.util.userprofile_path(), "system.log"),
         "format": "%(asctime)s %(levelname)10s %(message)s"
-    })
+    }, console_level=console_log_level)
     configure_logger({
         "name": "user",
         "level": logging.DEBUG,
         "logfile": os.path.join(gremlin.util.userprofile_path(), "user.log"),
         "format": "%(asctime)s %(message)s"
-    })
+    }, console_level=console_log_level)
 
     syslog = logging.getLogger("system")
 
@@ -1260,56 +1397,163 @@ if __name__ == "__main__":
 
     # Create user interface
     app_id = u"joystick.gremlin"
-    ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(app_id)
+    # Windows-only: SetProcessExplicitAppUserModelID for taskbar grouping
+    if sys.platform == "win32":
+        try:
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(app_id)
+        except Exception:
+            pass  # Fallback: silently fail on systems where this isn't available
+
+    # --- High-DPI & Wayland popups fix ---
+    # BEFORE QApplication is created so Qt picks up these attributes.
+    if sys.platform.startswith("linux"):
+        # Force legacy (non-quick) style so the native widget style is used.
+#pax - remove while testing hardover ride
+#        os.environ.setdefault("QT_QUICK_CONTROLS_STYLE", "legacy")
+
+        # Enable Qt's built-in HiDPI scaling so popups (QComboBox, QMenu, etc.)
+        # use logical pixels instead of physical pixels.  On Wayland popups that
+        # do not account for the display's device-pixel ratio appear offset when
+        # the window is moved or the monitor has non-96-DPI.  Enabling this
+        # attribute (the default after Qt5.6) corrects the offset.
+        os.environ["QT_AUTO_SCREEN_SCALE_FACTOR"] = "1"
+        os.environ["QT_SCALE_FACTOR"] = os.environ.get(
+            "QT_SCALE_FACTOR", ""
+        )  # honour user override if present
+    # --- end HiDPI fix ---
+
     app = QtWidgets.QApplication(sys.argv)
-    app.setWindowIcon(QtGui.QIcon("gfx/icon.png"))
-    app.setApplicationDisplayName("Joystick Gremlin")
+
+    app_icon = QtGui.QIcon("gfx/icon.png")
+    if app_icon.isNull():
+        logging.getLogger("system").warning("Failed to load application icon: gfx/icon.png")
+    app.setWindowIcon(app_icon)
+    app.setApplicationDisplayName("Joystick GremlinUX")
 
     # Ensure joystick devices are correctly setup
-    dill.DILL.init()
-    time.sleep(0.25)
-    gremlin.joystick_handling.joystick_devices_initialization()
+    #
+    # On Linux, vJoy is backed by uinput. The uinput virtual device MUST be
+    # created *before* DILL scans for input devices (which happens inside
+    # joystick_devices_initialization), otherwise the virtual joystick will
+    # be invisible to Gremlin's device tabs.
+
+    # Linux: initialize vJoy Linux (uinput) backend BEFORE device scan
+    vjoy_working = False
+    if sys.platform.startswith("linux"):
+        syslog = logging.getLogger("system")
+        syslog.info("Initializing Linux vJoy backend (uinput)")
+        try:
+            if _vjoy_interface.VJoyInterface.vJoyEnabled():
+                # Create persistent vJoy devices (keep them alive for the app lifetime).
+                # Number of devices is read from user Config options (default 1).
+                # On Linux, vJoy devices must be created BEFORE DILL scans so they appear 
+                # in /proc/bus/input/devices during device discovery.
+                vjoy_working = False
+                count = gremlin.config.Configuration().vjoy_device_count
+                for vjd_id in range(1, count + 1):
+                    try:
+                        gremlin.joystick_handling.VJoyProxy()[vjd_id]  # creates VJoy internally
+                        logging.getLogger("system").info("Linux vJoy device #%d created and active", vjd_id)
+                        vjoy_working = True
+                    except Exception as exc:
+                        logging.getLogger("system").warning(
+                            "Could not create vJoy device #%d: %s", vjd_id, exc
+                        )
+                        break  # Stop creating if one fails (likely ran out of slots)
+                
+                # Allow the uinput devices to settle so /proc/bus/input/devices reflects them.
+                if vjoy_working:
+                    time.sleep(0.3)
+
+                # print(f"test joystick now - still available")
+                # time.sleep(50)
+
+                # DILL init discovers all devices (vJoy + physical) in one call.
+                # By this point the vJoy device already exists in /proc, so it will
+                # be found by _discover_devices() inside init().
+                dill.DILL.init()
+
+                # Register callbacks for joystick events.
+                el = gremlin.event_handler.EventListener()
+                dill.DILL.set_device_change_callback(el._joystick_device_handler)
+                dill.DILL.set_input_event_callback(el._joystick_event_handler)
+
+                gremlin.joystick_handling.joystick_devices_initialization()
+            else:
+                syslog.warning(
+                    "uinput not available — vJoy output disabled. "
+                    "Ensure CONFIG_UINPUT=y, the uinput module is loaded "
+                    "(sudo modprobe uinput), and the current user is in the "
+                    "'input' group (sudo usermod -aG input $USER)."
+                )
+                # Still initialize DILL so physical joysticks work
+                dill.DILL.init()
+                time.sleep(1)
+                gremlin.joystick_handling.joystick_devices_initialization()
+        except Exception as e:
+            syslog.error("Linux vJoy backend failed: %s", e, exc_info=True)
+            # Still initialize DILL so physical joysticks work
+            dill.DILL.init()
+            time.sleep(1)
+            gremlin.joystick_handling.joystick_devices_initialization()
+
+    # Windows: device scan happens in initialization; vJoy is checked below
+    else:
+        time.sleep(1)
+        gremlin.joystick_handling.joystick_devices_initialization()
+
+
+    # print(f"1. test joystick now - still available")
+    # time.sleep(50)
 
     # Check if vJoy is properly setup and if not display an error
     # and terminate Gremlin
-    try:
-        syslog.info("Checking vJoy installation")
-        vjoy_working = len([
-            dev for dev in gremlin.joystick_handling.joystick_devices()
-            if dev.is_virtual
-        ]) != 0
+    if sys.platform.startswith("win32"):
+        # On Windows, verify vJoy is actually available with at least one device
+        try:
+            syslog.info("Checking vJoy installation")
+            vjoy_working = len([
+                dev for dev in gremlin.joystick_handling.joystick_devices()
+                if dev.is_virtual
+            ]) != 0
 
-        if not vjoy_working:
-            logging.getLogger("system").error(
-                "vJoy is not present or incorrectly setup."
+            if not vjoy_working:
+                logging.getLogger("system").error(
+                    "vJoy is not present or incorrectly setup."
+                )
+                raise gremlin.error.GremlinError(
+                    "vJoy is not present or incorrectly setup."
+                )
+        except (gremlin.error.GremlinError, dill.DILLError) as e:
+            error_display = QtWidgets.QMessageBox(
+                QtWidgets.QMessageBox.Critical,
+                "Error",
+                e.value,
+                QtWidgets.QMessageBox.Ok
             )
-            raise gremlin.error.GremlinError(
-                "vJoy is not present or incorrectly setup."
-            )
+            error_display.show()
+            app.exec_()
 
-    except (gremlin.error.GremlinError, dill.DILLError) as e:
-        error_display = QtWidgets.QMessageBox(
-            QtWidgets.QMessageBox.Critical,
-            "Error",
-            e.value,
-            QtWidgets.QMessageBox.Ok
-        )
-        error_display.show()
-        app.exec_()
-
-        gremlin.joystick_handling.VJoyProxy.reset()
-        event_listener = gremlin.event_handler.EventListener()
-        event_listener.terminate()
-        sys.exit(0)
+            gremlin.joystick_handling.VJoyProxy.reset()
+            event_listener = gremlin.event_handler.EventListener()
+            event_listener.terminate()
+            sys.exit(0)
 
     # Initialize action plugins
     syslog.info("Initializing plugins")
     gremlin.plugin_manager.ActionPlugins()
     gremlin.plugin_manager.ContainerPlugins()
 
+    # print(f"2. test joystick now - still available")
+    # time.sleep(5)
+
     # Create Gremlin UI
-    ui = GremlinUi()
+    ui = GremlinUi(vJoyInputTabsEnabled=args.joy)
     syslog.info("Gremlin UI created")
+
+    # print(f"3. GremlinUi - breaking device")
+    # print(f"3. test joystick now - Gone")
+    # time.sleep(5)
 
     # Handle user provided command line arguments
     if args.profile is not None and os.path.isfile(args.profile):
@@ -1320,7 +1564,10 @@ if __name__ == "__main__":
     if args.start_minimized:
         ui.setHidden(True)
 
-    # Run UI
+
+    # Run UI — defer showing until the first event-loop iteration
+    # to prevent Wayland spam (requestActivate rejected by compositor)
+    QtCore.QTimer.singleShot(0, ui._deferred_boot)
     syslog.info("Gremlin UI launching")
     app.exec_()
     syslog.info("Gremlin UI terminated")

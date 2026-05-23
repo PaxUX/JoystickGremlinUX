@@ -566,8 +566,8 @@ class KeyboardDeviceTabWidget(QtWidgets.QWidget):
         geom = root.geometry()
 
         self.button_press_dialog.setGeometry(
-            geom.x() + geom.width() / 2 - 150,
-            geom.y() + geom.height() / 2 - 75,
+            geom.x() + geom.width() // 2 - 150,
+            geom.y() + geom.height() // 2 - 75,
             300,
             150
         )
@@ -627,6 +627,37 @@ class KeyboardDeviceTabWidget(QtWidgets.QWidget):
         self.input_item_selected_cb(self.input_item_list_view.current_index)
 
 
+def _get_trigger_name(di_index: int) -> str:
+    """Return trigger name for a DirectInput axis index if it's a trigger."""
+    trigger_names = {
+        3: "LZ",  # ABS_Z → LT trigger
+        6: "RZ",  # ABS_RZ → RT trigger
+        7: "Slider",  # ABS_RUDDER → additional trigger
+        8: "Dial",   # ABS_GAS → additional trigger
+    }
+    if di_index in trigger_names:
+        return trigger_names[di_index]
+    return None
+
+
+def input_to_axis_name(di_index: int) -> str:
+    """Convert a DirectInput axis index to a UI display name.
+
+    Uses AxisNames enum for standard axes, falls back to trigger names
+    for trigger axes (Z=RZ=7, RZ=8, etc.), and generic names otherwise.
+    """
+    try:
+        from gremlin.common import AxisNames, input_to_ui_string
+        name = input_to_ui_string(AxisNames(di_index))
+        # If it's a trigger, replace generic name with meaningful label
+        trigger_name = _get_trigger_name(di_index)
+        if trigger_name:
+            return f"{trigger_name} ({name})"
+        return name
+    except Exception:
+        return f"Axis {di_index}"
+
+
 def input_item_index_lookup(index, input_items):
     """Returns the profile data belonging to the provided index.
 
@@ -655,6 +686,7 @@ def input_item_index_lookup(index, input_items):
     else:
         if index < axis_count:
             # Handle non continuous axis setups
+            # Sort axis keys to ensure consistent ordering
             axis_keys = sorted(input_items.config[InputType.JoystickAxis].keys())
             if not input_items.has_data(InputType.JoystickAxis, axis_keys[index]):
                 logging.getLogger("system").error(
@@ -664,42 +696,38 @@ def input_item_index_lookup(index, input_items):
                         axis_keys[index]
                     )
                 )
-
             return input_items.get_data(
                 InputType.JoystickAxis,
                 axis_keys[index]
             )
         elif index < axis_count + button_count:
-            if not input_items.has_data(
-                    InputType.JoystickButton,
-                    index - axis_count + 1
-            ):
+            # Handle trigger buttons (LT/RT can also be mapped as buttons)
+            button_keys = sorted(input_items.config[InputType.JoystickButton].keys())
+            button_id = button_keys[index - axis_count]
+            if not input_items.has_data(InputType.JoystickButton, button_id):
                 logging.getLogger("system").error(
                     "Attempting to retrieve non existent input, "
                     "type={} index={}".format(
                         InputType.to_string(InputType.JoystickButton),
-                        index - axis_count + 1
+                        button_id
                     )
                 )
-
             return input_items.get_data(
                 InputType.JoystickButton,
-                index - axis_count + 1
+                button_id
             )
         elif index < axis_count + button_count + hat_count:
-            if not input_items.has_data(
-                    InputType.JoystickHat,
-                    axis_count + button_count + hat_count
-            ):
+            hat_keys = sorted(input_items.config[InputType.JoystickHat].keys())
+            hat_id = hat_keys[index - axis_count - button_count]
+            if not input_items.has_data(InputType.JoystickHat, hat_id):
                 logging.getLogger("system").error(
                     "Attempting to retrieve non existent input, "
                     "type={} index={}".format(
-                        InputType.to_string(InputType.JoystickHat),
-                        index - axis_count - button_count + 1
+                        InputType.to_string(InputType.Hat),
+                        hat_id
                     )
                 )
-
             return input_items.get_data(
                 InputType.JoystickHat,
-                index - axis_count - button_count + 1
+                hat_id
             )

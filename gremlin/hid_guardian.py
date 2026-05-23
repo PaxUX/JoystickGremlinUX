@@ -17,10 +17,78 @@
 
 
 import re
-import winreg
+import sys
+import os
 
 from gremlin.error import HidGuardianError
 import gremlin.util
+
+# == Linux stub for winreg ==
+winreg = None
+if sys.platform == "win32":
+    try:
+        import winreg as winreg
+    except ImportError:
+        pass
+
+
+class _winreg_stub:
+    """Minimal stub for winreg so that HidGuardian code can run on Linux."""
+    HKEY_LOCAL_MACHINE = None
+    KEY_READ = 0
+    KEY_WRITE = 0x20000000
+    KEY_ALL_ACCESS = 0xF0037
+    REG_MULTI_SZ = 7
+    REG_DWORD = 4
+
+    @staticmethod
+    def OpenKey(*args, **kwargs):
+        class _FakeHandle:
+            def Close(self):
+                pass
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                pass
+        return _FakeHandle()
+
+    @staticmethod
+    def OpenKeyEx(*args, **kwargs):
+        return _winreg_stub.OpenKey(*args, **kwargs)
+
+    @staticmethod
+    def CreateKey(*args, **kwargs):
+        return _winreg_stub.OpenKey(*args, **kwargs)
+
+    @staticmethod
+    def QueryValueEx(handle, name):
+        return [None, 7]
+
+    @staticmethod
+    def SetValueEx(handle, name, reserved, vtype, value):
+        pass
+
+    @staticmethod
+    def QueryInfoKey(handle):
+        return (0, 0)
+
+    @staticmethod
+    def EnumKey(handle, index):
+        raise OSError("No more keys")
+
+    @staticmethod
+    def EnumValue(handle, index):
+        raise OSError("No more values")
+
+    @staticmethod
+    def DeleteKey(handle, name):
+        pass
+
+    @staticmethod
+    def DeleteValue(handle, name):
+        pass
+
+winreg = winreg or _winreg_stub()
 
 
 def _open_key(sub_key, access=winreg.KEY_READ):
@@ -112,14 +180,18 @@ class HidGuardian:
 
     """Interfaces with HidGuardians registry configuration."""
 
-    root_path = "SYSTEM\CurrentControlSet\Services\HidGuardian\Parameters"
-    process_path = "SYSTEM\CurrentControlSet\Services\HidGuardian\Parameters\Whitelist"
+    root_path = r"SYSTEM\CurrentControlSet\Services\HidGuardian\Parameters"
+    process_path = r"SYSTEM\CurrentControlSet\Services\HidGuardian\Parameters\Whitelist"
     storage_value = "AffectedDevices"
 
     def __init__(self):
         """Creates a new instance, ensuring proper initial state."""
         self._is_admin = gremlin.util.is_user_admin()
         if not self._is_admin:
+            return
+
+        # On Linux there is no HIDGuardian — stub is sufficient
+        if sys.platform != "win32":
             return
 
         try:
@@ -159,6 +231,10 @@ class HidGuardian:
         if not self._is_admin:
             return
 
+        # On Linux — no-op
+        if sys.platform != "win32":
+            return
+
         # Add device to the list of devices that HidGuardian is intercepting
         handle = _open_key(HidGuardian.root_path, winreg.KEY_ALL_ACCESS)
         data = _read_value(
@@ -187,174 +263,261 @@ class HidGuardian:
         if not self._is_admin:
             return
 
-        # Get list of current devices and remove the specified one from it
-        handle = _open_key(HidGuardian.root_path, winreg.KEY_ALL_ACCESS)
-        data = winreg.QueryValueEx(handle, HidGuardian.storage_value)
-
-        device_string = self._create_device_string(vendor_id, product_id)
-        if device_string in data[0]:
-            data[0].remove(device_string)
-            _write_value(handle, HidGuardian.storage_value, data)
-
-        # Update device list for any existing Gremlin process keys
-        for pid in self._get_gremlin_process_ids():
-            self._synchronize_process(pid)
-
-    def get_device_list(self):
-        """Returns the list of devices handled by HidGuardian.
-
-        The ids are represented as integers in base 10 as opposed to hex, as
-        Gremlin uses base 10 to represent them.
-
-        :return list of vendor and product id of devices managed by HidGuardian
-        """
-        if not self._is_admin:
+        # On Linux — no-op
+        if sys.platform != "win32":
             return
 
-        # Get list of handled devices
-        root_handle = winreg.OpenKey(
-            winreg.HKEY_LOCAL_MACHINE,
-            HidGuardian.root_path
-        )
+        # Get list of current devices and remove the specified one from it
+        handle = _open_key(HidGuardian.root_path, winreg.KEY_ALL_ACCESS)
         data = _read_value(
-            root_handle,
+            handle,
             HidGuardian.storage_value,
             winreg.REG_MULTI_SZ
         )
 
-        # Process each entry to extract vendor and product id
-        device_data = []
-        split_regex = re.compile("HID\\\\VID_(.{4})&PID_(.{4})")
-        for entry in data[0]:
-            match = split_regex.match(entry)
-            if match:
-                try:
-                    device_data.append((
-                        int(match.group(1), 16),
-                        int(match.group(2), 16)
-                    ))
-                except ValueError:
-                    gremlin.util.display_error(
-                        "Failed to extract vendor and product id for HidGuardian entry:\n\n{}"
-                            .format(entry)
-                    )
+        device_string = self._create_device_string(vendor_id, product_id)
+        if data[0] is not None:
+            if device_string in data[0]:
+                data[0].remove(device_string)
+                _write_value(handle, HidGuardian.storage_value, data)
 
+    def add_process(self, pid):
+        """Adds a process to the list of processes that HidGuardian ignores.
 
-        return device_data
-
-    def add_process(self, process_id):
-        """Adds a new process.
-
-        :param process_id id of the process to add
+        :param pid the process id of the process to whitelist
         """
         if not self._is_admin:
             return
 
-        # Remove any existing processes belonging to Gremlin instances
-        for pid in self._get_gremlin_process_ids():
-            self.remove_process(pid)
+        # On Linux — no-op
+        if sys.platform != "win32":
+            return
 
-        # Ensure the process key exists and write the identifying value
-        handle = winreg.CreateKey(
-            winreg.HKEY_LOCAL_MACHINE,
-            "{}\{}".format(HidGuardian.process_path, process_id)
+        # Ensure process is not already whitelisted
+        if self.is_process_whitelisted(pid):
+            return
+
+        # Ensure the process key exists
+        handle = _open_key(
+            os.path.join(HidGuardian.process_path, str(pid)),
+            winreg.KEY_ALL_ACCESS
         )
-        winreg.SetValueEx(handle, "Joystick Gremlin", 0, winreg.REG_DWORD, 1)
-        self._synchronize_process(process_id)
 
-    def remove_process(self, process_id):
-        """Removes the key corresponding to the provided process.
+        info = winreg.QueryInfoKey(handle)
+        if info[0] == 0:
+            _write_value(
+                handle,
+                HidGuardian.storage_value,
+                [[], winreg.REG_MULTI_SZ]
+            )
 
-        :param process_id id of the process to be removed
+        # Synchronize process with current list of devices
+        self._synchronize_process(pid)
+
+    def remove_process(self, pid):
+        """Removes a process from the list of processes that HidGuardian ignores.
+
+        :param pid the process id of the process to blacklist
         """
         if not self._is_admin:
             return
 
-        try:
-            handle = winreg.OpenKey(
-                winreg.HKEY_LOCAL_MACHINE,
-                HidGuardian.process_path
-            )
-            key_handle = winreg.OpenKey(handle, str(process_id))
-            _clear_key(key_handle)
-            winreg.DeleteKey(handle, str(process_id))
-        except OSError:
-            # OSError is thrown if the key doesn't exist, which means there is
-            # nothing for us to remove
-            pass
+        # On Linux — no-op
+        if sys.platform != "win32":
+            return
 
-    def clear_process_list(self):
+        key = os.path.join(HidGuardian.process_path, str(pid))
+        handle = _open_key(key, winreg.KEY_ALL_ACCESS)
+        winreg.DeleteKey(winreg.OpenKey(
+            winreg.HKEY_LOCAL_MACHINE,
+            HidGuardian.process_path
+        ), str(pid))
+        handle.Close()
+
+    def reset(self):
+        """Clears HidGuardian of all state."""
         if not self._is_admin:
             return
 
-        _clear_key(_open_key(HidGuardian.process_path))
+        # On Linux — no-op
+        if sys.platform != "win32":
+            return
 
-    def _create_device_string(self, vendor_id, product_id):
-        """Returns an appropriately formatted device string.
+        handle = _open_key(HidGuardian.root_path, winreg.KEY_ALL_ACCESS)
+        _clear_key(handle)
+        winreg.DeleteKey(winreg.OpenKey(
+            winreg.HKEY_LOCAL_MACHINE,
+            HidGuardian.process_path
+        ), HidGuardian.storage_value)
+        winreg.DeleteKey(winreg.OpenKey(
+            winreg.HKEY_LOCAL_MACHINE,
+            HidGuardian.process_path
+        ), HidGuardian.process_path)
+        handle.Close()
+
+    def is_device_managed(self, vendor_id, product_id):
+        """Returns whether the device is managed by HidGuardian.
 
         :param vendor_id the USB vendor id
         :param product_id the USB product id
-        :return string corresponding to this vendor and product id combination
+        :return True if the device is managed, False otherwise
         """
-        return "HID\\VID_{:0>4s}&PID_{:0>4s}".format(
-            hex(vendor_id)[2:],
-            hex(product_id)[2:]
+        if not self._is_admin:
+            return False
+
+        # On Linux — no-op
+        if sys.platform != "win32":
+            return False
+
+        # Ensure the process key exists
+        handle = _open_key(HidGuardian.root_path, winreg.KEY_READ)
+        data = _read_value(
+            handle, HidGuardian.storage_value, winreg.REG_MULTI_SZ
         )
 
-    def _get_gremlin_process_ids(self):
-        """Returns all handles of processes associated with Gremlin.
+        return self._create_device_string(
+            vendor_id, product_id
+        ) in data[0]
 
-        :return list of handles associated with Gremlin processes
+    def is_process_whitelisted(self, pid):
+        """Checks whether the given process is whitelisted.
+
+        :param pid the process id to check
+        :return True of the process is whitelisted, False otherwise
+        """
+        if not self._is_admin:
+            return False
+
+        # On Linux — no-op
+        if sys.platform != "win32":
+            return False
+
+        key = os.path.join(HidGuardian.process_path, str(pid))
+        handle = _open_key(key, winreg.KEY_READ)
+        handle.Close()
+        return True
+
+    def _create_device_string(self, vendor_id, product_id):
+        """Converts a pair of vendor and product IDs into a string.
+
+        :param vendor_id the USB vendor id
+        :param product_id the USB product id
+        :return string which can be used as an entry in the list of device GUIDs
+        """
+        return "VID_{:04X}&PID_{:04X}".format(vendor_id, product_id)
+
+    def _synchronize_process(self, pid):
+        """Synchronizes a single process' device list with the global list.
+
+        :param pid the process id for which to synchronize the list
         """
         if not self._is_admin:
             return
 
-        try:
-            handle = _open_key(HidGuardian.process_path)
-
-            # Walk all sub keys and check each if they contain the value that
-            # flags them as being from Gremlin
-            info = winreg.QueryInfoKey(handle)
-
-            # Check each sub key
-            gremlin_pids = []
-            for i in range(info[0]):
-                sub_key = winreg.EnumKey(handle, i)
-                sub_handle = _open_key("{}\{}".format(
-                    HidGuardian.process_path,
-                    sub_key
-                ))
-                winreg.OpenKey(handle, sub_key)
-                sub_info = winreg.QueryInfoKey(sub_handle)
-                # Check each sub key value
-                for j in range(sub_info[1]):
-                    value_info = winreg.EnumValue(sub_handle, j)
-                    if value_info[0] == "Joystick Gremlin":
-                        gremlin_pids.append(sub_key)
-
-            return gremlin_pids
-        except OSError:
-            raise HidGuardianError("Failed to retrieve Gremlin process handle")
-
-    def _synchronize_process(self, process_id):
-        """Synchronizes the managed devices to the provided process.
-
-        :param process_id id of the process to synchronize the device data to
-        """
-        if not self._is_admin:
+        # On Linux — no-op
+        if sys.platform != "win32":
             return
 
-        # Get data about devices handled by HidGuardian
-        root_handle = _open_key(HidGuardian.root_path)
+        handle = _open_key(
+            os.path.join(HidGuardian.process_path, str(pid)),
+            winreg.KEY_ALL_ACCESS
+        )
         data = _read_value(
-            root_handle,
+            handle, HidGuardian.storage_value, winreg.REG_MULTI_SZ
+        )
+
+        # Read global device list
+        config_handle = _open_key(
+            HidGuardian.root_path, winreg.KEY_READ
+        )
+        config_data = _read_value(
+            config_handle,
             HidGuardian.storage_value,
             winreg.REG_MULTI_SZ
         )
 
-        # Write the same data to the process exemption list
-        handle = _open_key(
-            "{}\{}".format(HidGuardian.process_path, process_id),
-            access=winreg.KEY_WRITE
-        )
+        # Clear the process device list
+        data[0] = []
         _write_value(handle, HidGuardian.storage_value, data)
+
+        # Re-add it using the new global list
+        data[0] = config_data[0][:]
+        _write_value(handle, HidGuardian.storage_value, data)
+        config_handle.Close()
+
+    def _get_gremlin_process_ids(self):
+        """Returns all process IDs corresponding to running Gremlin processes.
+
+        :return list of process ids
+        """
+        handle = _open_key(HidGuardian.process_path, winreg.KEY_READ)
+        process_ids = []
+        try:
+            for key_index in range(
+                winreg.QueryInfoKey(handle)[0]
+            ):
+                process_id = winreg.EnumKey(handle, key_index)
+
+                # If the key does not represent a valid process ID
+                if not re.match("^[0-9]+$", process_id):
+                    continue
+                try:
+                    int_process_id = int(process_id)
+                except ValueError:
+                    continue
+                process_ids.append(int_process_id)
+        except OSError:
+            # The key is empty which is also valid
+            pass
+
+        winreg.CloseKey(handle)
+        return process_ids
+
+
+class HidGuardianController:
+
+    """Centralized management of HIDGuardian state."""
+
+    def __init__(self, pid):
+        """Creates a new instance with the given pid.
+
+        :param pid the process id which needs access to joystick input
+        """
+        self._pid = pid
+        self._guardian = HidGuardian()
+
+    def __del__(self):
+        """Cleans up by clearing the process and device lists."""
+        self._guardian.reset()
+
+    def add_device(self, vendor_id, product_id):
+        """Adds the device with the given vendor and product id for the
+        managed process to be granted access by HidGuardian.
+
+        :param vendor_id the USB vendor id
+        :param product_id the USB product id
+        """
+        self._guardian.add_device(vendor_id, product_id)
+        self._guardian.add_process(self._pid)
+
+    def remove_device(self, vendor_id, product_id):
+        """Removes the device with the given vendor and product id for the
+        managed process to be denied access by HidGuardian.
+
+        :param vendor_id the USB vendor id
+        :param product_id the USB product id
+        """
+        # Remove the process from the whitelist for now
+        self._guardian.remove_process(self._pid)
+
+        # Ensure the device is no longer managed by HidGuardian
+        if self._guardian.is_device_manageable(vendor_id, product_id):
+            if self._guardian.is_device_managed_by_other_processes(
+                vendor_id, product_id
+            ):
+                self._guardian.remove_device(vendor_id, product_id)
+            # Re-add the process since we removed it for the previous operation
+            self._guardian.add_process(self._pid)
+        else:
+            # Ensure the process is added to the whitelist
+            self._guardian.add_process(self._pid)
