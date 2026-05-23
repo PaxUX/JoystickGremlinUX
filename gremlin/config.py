@@ -37,11 +37,6 @@ class Configuration:
         self._last_reload = None
         self.reload()
 
-        self.watcher = QtCore.QFileSystemWatcher([
-            os.path.join(util.userprofile_path(), "config.json")
-        ])
-        self.watcher.fileChanged.connect(self.reload)
-
     def reload(self):
         """Loads the configuration file's content."""
         if self._last_reload is not None and \
@@ -179,22 +174,44 @@ class Configuration:
                 self._data["profiles"].items(),
                 key=lambda x: x[0].lower()
         ):
-            # Ignore valid files
+            # Ignore valid files — treat them as literal paths, not regex.
             if os.path.exists(key):
                 continue
 
-            # Treat key as regular expression and attempt to match it to the
-            # provided executable path
-            if re.search(key, exec_path) is not None:
-                logging.getLogger("system").info(
-                    "Found regex match in {} for {}, returning {}".format(
-                        key,
-                        exec_path,
-                        value
-                    )
+            # Keys stored as literal paths (e.g. '/home/user/.steam/...')
+            # or regex patterns may contain regex metacharacters like (, ), [
+            # ].  Attempt as a regex first; if that fails, fall back to a
+            # literal (escaped) match so stale entries never crash the loop.
+            pattern = key
+            try:
+                re.compile(pattern)  # validate the regex
+            except re.error:
+                # Not a valid regex -- treat as literal path
+                pattern = re.escape(key)
+                logging.getLogger("system").warning(
+                    "Profile key '%s' is not a valid regex; treating as literal.", key
+                )
+
+            # Attempt the match (double-guard against re.error)
+            matched = False
+            try:
+                matched = re.search(pattern, exec_path) is not None
+            except re.error:
+                # Double-fail: still not valid (shouldn't happen after
+                # re.escape, but guard anyway).  Skip this key.
+                logging.getLogger("system").warning(
+                    "Config key '%r' failed to compile after re.escape; skipping.", key
+                )
+                continue
+
+            if matched:
+                logging.getLogger("system").debug(
+                    "Found regex match in '%s' for '%s', returning '%s'",
+                    key, exec_path, value
                 )
                 return value
 
+        return None
     def set_profile(self, exec_path, profile_path):
         """Stores the executable and profile combination.
 
@@ -286,31 +303,6 @@ class Configuration:
         """
         if type(value) == bool:
             self._data["autoload_profiles"] = value
-            self.save()
-
-    @property
-    def keep_last_autoload(self):
-        """Returns whether or not to keep last autoloaded profile active when it would otherwise
-        be automatically disabled.
-
-        This setting prevents unloading an autoloaded profile when not changing to another one.
-
-        :return True if last profile keeping is active, False otherwise
-        """
-        return self._data.get("keep_last_autoload", False)
-
-    @keep_last_autoload.setter
-    def keep_last_autoload(self, value):
-        """Sets whether or not to keep last autoloaded profile active when it would otherwise
-        be automatically disabled.
-
-        This setting prevents unloading an autoloaded profile when not changing to another one.
-
-        :param value Flag indicating whether or not to enable / disable the
-            feature
-        """
-        if type(value) == bool:
-            self._data["keep_last_autoload"] = value
             self.save()
 
     @property
@@ -517,6 +509,24 @@ class Configuration:
     @macro_record_mouse.setter
     def macro_record_mouse(self, value):
         self._data["macro_record_mouse"] = bool(value)
+        self.save()
+
+    @property
+    def vjoy_device_count(self):
+        """Returns the number of vJoy devices to create on startup.
+
+        :return number of vJoy devices (1–16)
+        """
+        return self._data.get("vjoy_device_count", 1)
+
+    @vjoy_device_count.setter
+    def vjoy_device_count(self, value: int) -> None:
+        """Sets the number of vJoy devices to create on startup.
+
+        :param value number of vJoy devices (1–16)
+        """
+        clamped = max(1, min(value, 16))
+        self._data["vjoy_device_count"] = int(clamped)
         self.save()
 
     @property

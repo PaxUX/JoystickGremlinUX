@@ -278,11 +278,11 @@ class MacroActionEditor(QtWidgets.QWidget):
     def _mouse_motion_ui(self):
         self.ui_elements["dx_label"] = QtWidgets.QLabel("Change in X")
         self.ui_elements["dx_spinbox"] = QtWidgets.QSpinBox()
-        self.ui_elements["dx_spinbox"].setRange(-1e5, 1e5)
+        self.ui_elements["dx_spinbox"].setRange(-100000, 100000)
         self.ui_elements["dx_spinbox"].setValue(0)
         self.ui_elements["dy_label"] = QtWidgets.QLabel("Change in Y")
         self.ui_elements["dy_spinbox"] = QtWidgets.QSpinBox()
-        self.ui_elements["dy_spinbox"].setRange(-1e5, 1e5)
+        self.ui_elements["dy_spinbox"].setRange(-100000, 100000)
         self.ui_elements["dy_spinbox"].setValue(0)
 
         # Populate boxes with values
@@ -314,7 +314,7 @@ class MacroActionEditor(QtWidgets.QWidget):
             gremlin.ui.common.DynamicDoubleSpinBox()
         self.ui_elements["duration_spinbox"].setSingleStep(0.1)
         self.ui_elements["duration_spinbox"].setMaximum(3600)
-        duration = 0.5
+        duration = 0.2
         if self.model.get_entry(self.index.row()) is not None:
             duration = self.model.get_entry(self.index.row()).duration
         self.ui_elements["duration_spinbox"].setValue(duration)
@@ -495,10 +495,10 @@ class MacroActionEditor(QtWidgets.QWidget):
         geom = root.geometry()
 
         self.button_press_dialog.setGeometry(
-            geom.x() + geom.width() / 2 - 150,
-            geom.y() + geom.height() / 2 - 75,
-            300,
-            150
+            geom.x(),
+            geom.y(),
+            geom.width(),
+            geom.height()
         )
         self.button_press_dialog.show()
 
@@ -759,9 +759,6 @@ class MacroListModel(QtCore.QAbstractListModel):
         :return entry stored at the given index
         """
         if not 0 <= index < len(self._data):
-            logging.getLogger("system").error(
-                "Attempted to retrieve macro entry at invalid index"
-            )
             return None
         return self._data[index]
 
@@ -1349,12 +1346,13 @@ class MacroWidget(gremlin.ui.input_item.AbstractActionWidget):
             cur_index = self.list_view.currentIndex().row()
             entry = self.model.get_entry(cur_index)
 
-            if event in self._recording_times:
-                if time.time() - self._recording_times[event] < self._polling_rate:
-                    add_new_entry = False
-                elif abs(event.value - self._recording_values[event]) < \
-                        self._minimum_change_amount:
-                    add_new_entry = False
+            if event not in self._recording_times:
+                self._recording_times[event] = time.time()
+            elif time.time() - self._recording_times[event] < self._polling_rate:
+                add_new_entry = False
+            elif abs(event.value - self._recording_values[event]) < \
+                    self._minimum_change_amount:
+                add_new_entry = False
 
         if add_new_entry:
             if self.record_time.isChecked():
@@ -1438,7 +1436,7 @@ class MacroWidget(gremlin.ui.input_item.AbstractActionWidget):
 
     def _pause_cb(self):
         """Adds a pause macro action to the list."""
-        self._insert_entry_at_current_index(gremlin.macro.PauseAction(0.01))
+        self._insert_entry_at_current_index(gremlin.macro.PauseAction(0.2))
         self._refresh_editor_ui()
 
     def _delete_cb(self):

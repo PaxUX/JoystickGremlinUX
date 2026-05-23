@@ -17,8 +17,44 @@
 
 
 import os
-from PyQt5 import QtCore, QtGui, QtMultimedia, QtWidgets
+import subprocess
+import sys
+from PyQt5 import QtGui, QtWidgets
 from xml.etree import ElementTree
+
+from gremlin import linux_checks
+
+
+def _play_sound_process(sound_file, volume):
+    """Standalone function to run ffplay in a detached process group."""
+    if not sound_file:
+        return
+
+    if not linux_checks.ffplay_available():
+        print("WARNING: ffplay not found — cannot play sound.", file=sys.stderr)
+        return
+
+    try:
+        volume = min(max(int(volume), 0), 100)
+    except (TypeError, ValueError):
+        volume = 100
+
+    args = [
+        "ffplay",
+        sound_file,
+        "-nodisp",
+        "-autoexit",
+        "-volume", str(volume),
+        "-hide_banner",
+        "-loglevel", "error",
+    ]
+
+    subprocess.Popen(
+        args,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
 
 from gremlin.base_classes import AbstractAction, AbstractFunctor
 from gremlin.common import InputType
@@ -42,12 +78,15 @@ class PlaySoundWidget(gremlin.ui.input_item.AbstractActionWidget):
         self.volume = QtWidgets.QSpinBox()
         self.volume.setRange(0, 100)
         self.volume.valueChanged.connect(self._volume_changed)
+        self.test_button = QtWidgets.QPushButton("Test Play")
+        self.test_button.clicked.connect(self._test_play)
 
         self.layout.addWidget(self.file_path)
         self.layout.addWidget(self.edit_path)
         self.layout.addWidget(QtWidgets.QLabel("Volume"))
         self.layout.addWidget(self.volume)
         self.main_layout.addLayout(self.layout)
+        self.main_layout.addWidget(self.test_button)
 
     def _populate_ui(self):
         self.file_path.setText(self.action_data.sound_file)
@@ -70,10 +109,14 @@ class PlaySoundWidget(gremlin.ui.input_item.AbstractActionWidget):
             self.action_data.sound_file = fname
             self._populate_ui()
 
+    def _test_play(self):
+        if self.action_data.sound_file:
+            _play_sound_process(self.action_data.sound_file, self.volume.value())
+
 
 class PlaySoundFunctor(AbstractFunctor):
 
-    player = QtMultimedia.QMediaPlayer()
+    """Functor that plays a sound file."""
 
     def __init__(self, action):
         super().__init__(action)
@@ -81,12 +124,10 @@ class PlaySoundFunctor(AbstractFunctor):
         self.volume = action.volume
 
     def process_event(self, event, value):
-        PlaySoundFunctor.player.setMedia(
-            QtMultimedia.QMediaContent(
-                QtCore.QUrl.fromLocalFile(self.sound_file)
-            ))
-        PlaySoundFunctor.player.setVolume(self.volume)
-        PlaySoundFunctor.player.play()
+        if not self.sound_file:
+            return True
+
+        _play_sound_process(self.sound_file, self.volume)
         return True
 
 

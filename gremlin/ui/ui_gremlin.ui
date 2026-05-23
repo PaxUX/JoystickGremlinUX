@@ -11,7 +11,7 @@
    </rect>
   </property>
   <property name="windowTitle">
-   <string>Joystick Gremlin</string>
+   <string>Joystick GremlinUX</string>
   </property>
   <widget class="QWidget" name="main">
    <layout class="QHBoxLayout" name="horizontalLayout">

@@ -123,15 +123,21 @@ class RemapWidget(gremlin.ui.input_item.AbstractActionWidget):
         if self.action_data.parent.tag == "hat_buttons":
             input_type = InputType.JoystickButton
 
-        # Handle obscure bug which causes the action_data to contain no
-        # input_type information
-        if input_type is None:
-            input_type = InputType.JoystickButton
-            logging.getLogger("system").warning("None as input type encountered")
-
         # If no valid input item is selected get the next unused one
         if self.action_data.vjoy_input_id in [0, None]:
             free_inputs = self._get_profile_root().list_unused_vjoy_inputs()
+
+            # On Linux there are no vJoy devices, so free_inputs is empty.
+            # The remap action requires a vJoy output which does not exist
+            # on Linux. Display a non-crashing error state.
+            if not free_inputs:
+                logging.getLogger("system").error(
+                    "Remap action targets vJoy output, which is not "
+                    "available on Linux. The profile contains remap actions "
+                    "that cannot function without a vJoy virtual joystick "
+                    "device. The UI will skip this action to avoid a crash."
+                )
+                return
 
             input_name = self.type_to_name_map[input_type].lower()
             input_type = self.name_to_type_map[input_name.capitalize()]
@@ -220,6 +226,9 @@ class RemapFunctor(gremlin.base_classes.AbstractFunctor):
         self.axis_value = 0.0
 
     def process_event(self, event, value):
+        if not (self.vjoy_device_id and self.vjoy_device_id > 0):
+            return False
+        
         if self.input_type == InputType.JoystickAxis:
             if self.axis_mode == "absolute":
                 joystick_handling.VJoyProxy()[self.vjoy_device_id] \
@@ -438,7 +447,12 @@ class Remap(gremlin.base_classes.AbstractAction):
 
         :return True if the action is configured correctly, False otherwise
         """
-        return not(self.vjoy_device_id is None or self.vjoy_input_id is None)
+        return (
+            self.vjoy_device_id is not None
+            and self.vjoy_input_id is not None
+            and self.vjoy_device_id > 0
+            and self.vjoy_input_id > 0
+        )
 
 
 version = 1

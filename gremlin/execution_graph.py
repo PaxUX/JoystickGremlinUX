@@ -53,27 +53,21 @@ class ContainerCallback:
             common.InputType.JoystickAxis,
             common.InputType.JoystickHat
         ]:
-            value = actions.Value(event.value)
+            shared_value = actions.Value(event.value)
         elif event.event_type in [
             common.InputType.JoystickButton,
             common.InputType.Keyboard,
             common.InputType.VirtualButton
         ]:
-            value = actions.Value(event.is_pressed)
+            shared_value = actions.Value(event.is_pressed)
         else:
             raise error.GremlinError("Invalid event type")
 
-        # Containers representing a virtual button get their individual
-        # value instance, all others share one to propagate changes across
-        shared_value = copy.deepcopy(value)
+        # Debug hook: Log if this is the axis we care about
+        # if event.event_type == common.InputType.JoystickAxis:
+        #     logging.getLogger("system").debug("ExecGraph | Input Axis Index: %d, Raw Value: %.3f", event.input_index, event.value)
 
-        if event == common.InputType.VirtualButton:
-            # TODO: remove this at a future stage
-            logging.getLogger("system").error(
-                "Virtual button code path being used"
-            )
-        else:
-            self.execution_graph.process_event(event, shared_value)
+        self.execution_graph.process_event(event, shared_value)
 
 
 class VirtualButtonCallback:
@@ -167,6 +161,13 @@ class AbstractExecutionGraph(metaclass=ABCMeta):
         # a "release" event is sent.
         process_again = False
 
+        # Debug: log which functors are in this graph
+        # if event.event_type == common.InputType.JoystickAxis:
+        #     logging.getLogger("system").debug(
+        #         "ExecGraph | Functors in graph: %s",
+        #         [getattr(f, '__class__', type(f).__name__) for f in self.functors]
+        #     )
+
         while self.current_index is not None and len(self.functors) > 0:
             functor = self.functors[self.current_index]
             result = functor.process_event(event, value)
@@ -181,7 +182,7 @@ class AbstractExecutionGraph(metaclass=ABCMeta):
         self.current_index = 0
 
         if process_again:
-            time.sleep(0.05)
+            time.sleep(0.008)
             self.process_event(event, value)
 
     @abstractmethod

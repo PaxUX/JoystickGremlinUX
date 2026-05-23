@@ -242,7 +242,14 @@ class SplitAxis(AbstractAction):
         return node
 
     def _is_valid(self):
-        return True
+        return (
+            self.device_low_vjoy_id is not None
+            and self.device_high_vjoy_id is not None
+            and self.device_low_vjoy_id > 0
+            and self.device_high_vjoy_id > 0
+            and self.device_low_axis is not None
+            and self.device_high_axis is not None
+        )
 
 
 version = 1

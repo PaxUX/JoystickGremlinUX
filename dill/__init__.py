@@ -21,7 +21,11 @@ import ctypes
 import ctypes.wintypes as ctwt
 from enum import Enum
 import os
+import sys
 import time
+
+# Axis map length -- must match MAX_AXIS_MAP in dill/dill_backend.py
+AXIS_MAP_LEN = 8
 
 
 class DILLError(Exception):
@@ -187,7 +191,11 @@ class GUID:
         bool
             True if the two GUIDs are equal, False otherwise
         """
-        return hash(self) == hash(other)
+        if not isinstance(other, GUID):
+            return False
+        return self.guid == other.guid
+
+
 
     def __lt__(self, other):
         """Returns the result of the < operator.
@@ -205,26 +213,12 @@ class GUID:
         return str(self) < str(other)
 
     def __hash__(self):
-        """Returns the hash of this GUID.
-
-        Returns
-        =======
-        int
-            The has computed from this GUID
+        """Return a hash of this GUID so it can be used in dicts/sets.
+        
+        MUST hash the same value as __eq__ to maintain the requirement
+        that equal objects have equal hashes.
         """
-        return hash((
-            self._ctypes_guid.Data1,
-            self._ctypes_guid.Data2,
-            self._ctypes_guid.Data3,
-            self._ctypes_guid.Data4[0],
-            self._ctypes_guid.Data4[1],
-            self._ctypes_guid.Data4[2],
-            self._ctypes_guid.Data4[3],
-            self._ctypes_guid.Data4[4],
-            self._ctypes_guid.Data4[5],
-            self._ctypes_guid.Data4[6],
-            self._ctypes_guid.Data4[7]
-        ))
+        return hash(self.guid)
 
 
 GUID_Keyboard = GUID(_GUID_SysKeyboard)
@@ -351,24 +345,33 @@ class DeviceSummary:
             The data received from DILL and to be held by this instance
         """
         self.device_guid = GUID(data.device_guid)
-        self.vendor_id = data.vendor_id
-        self.product_id = data.product_id
-        self.joystick_id = data.joystick_id
+        self.vendor_id = int(data.vendor_id)
+        self.product_id = int(data.product_id)
+        self.joystick_id = int(data.joystick_id)
         self.name = data.name.decode("utf-8")
-        self.axis_count = data.axis_count
-        self.button_count = data.button_count
-        self.hat_count = data.hat_count
-        self.axis_map = []
-        for i in range(8):
-            self.axis_map.append(AxisMap(data.axis_map[i]))
+        # CRITICAL: axis_count/button_count/hat_count must be Python ints
+        self.axis_count = int(data.axis_count)
+        self.button_count = int(data.button_count)
+        self.hat_count = int(data.hat_count)
+        # Read axis_map from ctypes _DeviceSummary
+        self._device_summary = data
+        self.axis_map = [AxisMap(data.axis_map[i]) for i in range(8)]
         self.vjoy_id = -1
+
+    def __repr__(self):
+        return f"DeviceSummary({self.name}, axes={self.axis_count}, buttons={self.button_count}, hats={self.hat_count})"
 
     @property
     def is_virtual(self):
         """Returns if a device is virtual.
 
+        Detects vJoy devices by native vJoy VID/PID (0x1234/0xBEAD), which
+        is unique to vJoy.  Real Xbox controllers share 0x045E/0x028E and
+        appear on physical buses (USB '0003' or Bluetooth '0005'), so they
+        are correctly treated as physical input devices.
+
         Returns
-        =======
+        ==
         bool
             True if the device is a virtual vJoy device, False otherwise
         """
@@ -393,268 +396,9 @@ class DeviceSummary:
 C_EVENT_CALLBACK = ctypes.CFUNCTYPE(None, _JoystickInputData)
 C_DEVICE_CHANGE_CALLBACK = ctypes.CFUNCTYPE(None, _DeviceSummary, ctypes.c_uint8)
 
-_dll_path = os.path.join(os.path.dirname(__file__), "dill.dll")
-_di_listener_dll = ctypes.cdll.LoadLibrary(_dll_path)
+# Linux DILL backend — direct import, no platform detection needed
+from dill.dill_backend import _LinuxDILL
 
-_di_listener_dll.get_device_information_by_index.argtypes = [ctypes.c_uint]
-_di_listener_dll.get_device_information_by_index.restype = _DeviceSummary
-
-
-class DILL:
-
-    """Exposes functions of the DILL library in an easy to use manner."""
-
-    # Attempt to find the correct location of the dll for development
-    # and installed use cases.
-    _dev_path = os.path.join(os.path.dirname(__file__), "dill.dll")
-    if os.path.isfile("dill.dll"):
-        _dll_path = "dill.dll"
-    elif os.path.isfile(_dev_path):
-        _dll_path = _dev_path
-    else:
-        raise DILLError("Unable to locate di_listener dll")
-
-    _dll = ctypes.cdll.LoadLibrary(_dll_path)
-
-    # Storage for the callback functions
-    device_change_callback_fn = None
-    input_event_callback_fn = None
-
-    # Declare argument and return types for all the functions
-    # exposed by the dll
-    api_functions = {
-        "init": {
-            "arguments": [],
-            "returns": None
-        },
-        "set_input_event_callback": {
-            "arguments": [C_EVENT_CALLBACK],
-            "returns": None
-        },
-        "set_device_change_callback": {
-            "arguments": [C_DEVICE_CHANGE_CALLBACK],
-            "returns": None
-        },
-        "get_device_information_by_index": {
-            "arguments": [ctypes.c_uint],
-            "returns": _DeviceSummary
-        },
-        "get_device_information_by_guid": {
-            "arguments": [_GUID],
-            "returns": _DeviceSummary
-        },
-        "get_device_count": {
-            "arguments": [],
-            "returns": ctypes.c_uint
-        },
-        "device_exists": {
-            "arguments": [_GUID],
-            "returns": ctypes.c_bool
-        },
-        "get_axis": {
-            "arguments": [_GUID, ctwt.DWORD],
-            "returns": ctwt.LONG
-        },
-        "get_button": {
-            "arguments": [_GUID, ctwt.DWORD],
-            "returns": ctypes.c_bool
-        },
-        "get_hat": {
-            "arguments": [_GUID, ctwt.DWORD],
-            "returns": ctwt.LONG
-        }
-    }
-
-    @staticmethod
-    def init():
-        """Initializes the DILL library.
-
-        This has to be called before any other DILL interactions can take place.
-        """
-        DILL._dll.init()
-
-    @staticmethod
-    def set_input_event_callback(callback):
-        """Sets the callback function to use for input events.
-
-        The provided callback function will be executed whenever an event
-        occurs by the DILL library providing and InputEvent object to said
-        callback.
-
-        Parameters
-        ==========
-        callback : callable
-            Function to execute when an event occurs.
-        """
-        DILL.input_event_callback_fn = C_EVENT_CALLBACK(callback)
-        DILL._dll.set_input_event_callback(
-            DILL.input_event_callback_fn
-        )
-
-    @staticmethod
-    def set_device_change_callback(callback):
-        """Sets the callback function to use for device change events.
-
-        The provided function will be executed whenever the status of a
-        device changes, providing a DeviceSummary object to the callback.
-
-        Parameters
-        ==========
-        callback : callable
-            Function to execute when an event occurs.
-        """
-        DILL.device_change_callback_fn = \
-            C_DEVICE_CHANGE_CALLBACK(callback)
-        DILL._dll.set_device_change_callback(
-            DILL.device_change_callback_fn
-        )
-
-    @staticmethod
-    def get_device_count():
-        """Returns the number of connected devices.
-
-        Return
-        ======
-        int
-            The number of devices connected.
-        """
-        return DILL._dll.get_device_count()
-
-    @staticmethod
-    def get_device_information_by_index(index):
-        """Returns device information for the given index.
-
-        Parameters
-        ==========
-        index : int
-            The index of the device for which to return information.
-
-        Return
-        ======
-        DeviceSummary
-            Structure containing detailed information about the desired device.
-        """
-        return DeviceSummary(
-            DILL._dll.get_device_information_by_index(index)
-        )
-
-    @staticmethod
-    def get_device_information_by_guid(guid):
-        """Returns device information for the given GUID.
-
-        Parameters
-        ==========
-        guid : GUID
-            The GUID of the device for which to return information.
-
-        Return
-        ======
-        DeviceSummary
-            Structure containing detailed information about the desired device.
-        """
-        return DeviceSummary(
-            DILL._dll.get_device_information_by_guid(guid.ctypes)
-        )
-
-    @staticmethod
-    def get_axis(guid, index):
-        """Returns the state of the specified axis for a specific device.
-
-        Parameters
-        ==========
-        guid : GUID
-            GUID of the device of interest.
-        index : int
-            Index of the axis to return the value of.
-
-        Return
-        ======
-        float
-            Current value of the specific axis for the desired device.
-        """
-        return DILL._dll.get_axis(guid.ctypes, index)
-
-    @staticmethod
-    def get_button(guid, index):
-        """Returns the state of the specified button for a specific device.
-
-        Parameters
-        ==========
-        guid : GUID
-            GUID of the device of interest.
-        index : int
-            Index of the button to return the value of.
-
-        Return
-        ======
-        bool
-            Current value of the specific button for the desired device.
-        """
-        return DILL._dll.get_button(guid.ctypes, index)
-
-    @staticmethod
-    def get_hat(guid, index):
-        """Returns the state of the specified hat for a specific device.
-
-        Parameters
-        ==========
-        guid : GUID
-            GUID of the device of interest.
-        index : int
-            Index of the hat to return the value of.
-
-        Return
-        ======
-        int
-            Current value of the specific hat for the desired device.
-        """
-        return DILL._dll.get_hat(guid.ctypes, index)
-
-    @staticmethod
-    def get_device_name(guid):
-        """Returns the name of the device specified by the provided GUID.
-
-        Parameters
-        ==========
-        guid : GUID
-            GUID of the device of which to return the name
-
-        Return
-        ======
-        str
-            Name of the specified device.
-        """
-        info = DeviceSummary(
-            DILL._dll.get_device_information_by_guid(guid.ctypes)
-        )
-        return info.name
-
-    @staticmethod
-    def device_exists(guid):
-        """Returns whether or not a specific device is connected.
-
-        Parameters
-        ==========
-        guid : GUID
-            GUID of the device to check whether or not it is connected
-
-        Return
-        ======
-        bool
-            True if the device is connected, False otherwise.
-        """
-        return DILL._dll.device_exists(guid.ctypes)
-
-    @staticmethod
-    def initialize_capi():
-        """Initializes the functions as class methods."""
-        for fn_name, params in DILL.api_functions.items():
-            dll_fn = getattr(DILL._dll, fn_name)
-            if "arguments" in params:
-                dll_fn.argtypes = params["arguments"]
-            if "returns" in params:
-                dll_fn.restype = params["returns"]
-
-
-# Initialize the class
-DILL.initialize_capi()
+DILL = _LinuxDILL
+_DILL_impl = _LinuxDILL
+_DILL_impl.initialize()

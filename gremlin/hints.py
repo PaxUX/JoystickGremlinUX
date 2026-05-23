@@ -18,14 +18,25 @@
 """Reads hints from a CSV file and makes them available to Gremlin for use."""
 
 import csv
+import os
 
-from gremlin.util import resource_path
 
 # Stores the hints and allows Gremlin to grab the ones it needs for display
 hint = {}
 
+_hints_candidates = [
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "doc", "hints.csv"),
+    os.path.join(os.getcwd(), "doc", "hints.csv"),
+]
 
-with open(resource_path("doc/hints.csv")) as csv_stream:
-    reader = csv.reader(csv_stream, delimiter=",", quotechar="\"")
-    for row in reader:
-        hint[row[0]] = row[1]
+_hint_path = None
+for _c in _hints_candidates:
+    if os.path.isfile(os.path.realpath(_c)):
+        _hint_path = os.path.realpath(_c)
+        break
+
+if _hint_path is not None:
+    with open(_hint_path) as csv_stream:
+        reader = csv.reader(csv_stream, delimiter=",", quotechar='"')
+        for row in reader:
+            hint[row[0]] = row[1]

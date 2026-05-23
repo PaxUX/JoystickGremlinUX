@@ -35,6 +35,27 @@ class SingletonDecorator:
         return self.instance
 
 
+class SingletonMetaclass(type):
+    """Metaclass turning a class into a singleton.
+
+    Usage:
+        class Foo(metaclass=common.SingletonMetaclass):
+            def __init__(self):
+                ...
+
+    Each class decorated with this metaclass will be guaranteed to have
+    only one instance, regardless of how many times it is instantiated.
+    This is the preferred singleton pattern in this project.
+    """
+
+    _instances: dict[type, object] = {}
+
+    def __call__(cls, *args, **kwargs):
+        if cls not in cls._instances:
+            cls._instances[cls] = super().__call__(*args, **kwargs)
+        return cls._instances[cls]
+
+
 class InputType(enum.Enum):
 
     """Enumeration of possible input types."""
@@ -86,6 +107,8 @@ class AxisNames(enum.Enum):
     RZ = 6
     SLIDER = 7
     DIAL = 8
+    SLIDER2 = 9  # SL0 - left trigger
+    DIAL2 = 10   # SL1 - right trigger
 
     @staticmethod
     def to_string(value):
@@ -112,9 +135,12 @@ _AxisNames_to_string_lookup = {
     AxisNames.Z: "Z Axis",
     AxisNames.RX: "X Rotation",
     AxisNames.RY: "Y Rotation",
-    AxisNames.RZ: "Z Rotation",
-    AxisNames.SLIDER: "Slider",
-    AxisNames.DIAL: "Dial"
+    AxisNames.RZ: "Z Rotation",   # RT trigger
+    AxisNames.SLIDER: "Slider", # SL0
+    AxisNames.DIAL: "Dial",     # SL1
+    # Fallback mappings for SLIDER2 and DIAL2 if they ever get used
+    AxisNames.SLIDER2: "Left Trigger",
+    AxisNames.DIAL2: "Right Trigger",
 }
 
 _AxisNames_to_enum_lookup = {
@@ -125,7 +151,9 @@ _AxisNames_to_enum_lookup = {
     "Y Rotation": AxisNames.RY,
     "Z Rotation": AxisNames.RZ,
     "Slider": AxisNames.SLIDER,
-    "Dial": AxisNames.DIAL
+    "Dial": AxisNames.DIAL,
+    "Left Trigger": AxisNames.SLIDER2,
+    "Right Trigger": AxisNames.DIAL2,
 }
 
 
@@ -205,17 +233,31 @@ class MouseButton(enum.Enum):
 
     @staticmethod
     def to_string(value):
+        # Accept both enum members and integer values (from Qt signals,
+        # raw event data, or XML deserialization).
+        if not isinstance(value, MouseButton):
+            try:
+                value = MouseButton(value)
+            except (ValueError, TypeError):
+                raise gremlin.error.GremlinError(
+                    f"Invalid mouse button: {value!r} (expected MouseButton or int)"
+                )
         try:
             return _MouseButton_to_string_lookup[value]
         except KeyError:
-            raise gremlin.error.GremlinError("Invalid type in lookup")
+            raise gremlin.error.GremlinError(
+                f"Unmapped mouse button value: {value!r}"
+            )
 
     @staticmethod
-    def to_enum(value):
+    def from_string(value):
+        """Convert a string name back to a MouseButton enum member."""
         try:
             return _MouseButton_to_enum_lookup[value]
         except KeyError:
-            raise gremlin.error.GremlinError("Invalid type in lookup")
+            raise gremlin.error.GremlinError(
+                f"Unmatched mouse button name: {value!r}"
+            )
 
 
 _MouseButton_to_string_lookup = {
@@ -280,6 +322,20 @@ direction_tuple_lookup = {
     "West": (-1, 0),
     "North West": (-1, 1)
 }
+
+
+class DisplayServer(enum.Enum):
+    """Enumeration of supported display servers (X11, Wayland, etc.)."""
+
+    Unset = enum.auto()
+    X11 = enum.auto()
+    Wayland = enum.auto()
+
+
+# Module-level variable that `joystick_gremlin.py` sets at startup based on
+# session detection. All other modules can import this to know which backend
+# they're running against.
+current_display_server = DisplayServer.Unset
 
 
 class DeviceType(enum.Enum):

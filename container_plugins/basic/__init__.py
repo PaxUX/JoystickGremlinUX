@@ -17,6 +17,8 @@
 
 from xml.etree import ElementTree
 
+from PyQt5 import QtCore, QtGui, QtWidgets
+
 import gremlin
 import gremlin.ui.common
 import gremlin.ui.input_item
@@ -24,83 +26,171 @@ import gremlin.ui.input_item
 
 class BasicContainerWidget(gremlin.ui.input_item.AbstractContainerWidget):
 
-    """Basic container which holds a single action."""
+    """Basic container which holds a single action.
+
+    Shows a macro-specific instruction text box at the top when the
+    assigned action is a Macro.
+"""
 
     def __init__(self, profile_data, parent=None):
-        """Creates a new instance.
+        gremlin.ui.input_item.AbstractContainerWidget.__init__(
+            self, profile_data, parent
+        )
 
-        :param profile_data the profile data represented by this widget
-        :param parent the parent of this widget
-        """
-        super().__init__(profile_data, parent)
+    # ====== Overriden from base class ======
+
+    def _select_tab(self, view_type):
+        """Override: always show the Action tab so the instruction is
+        visible and the action selector works."""
+        # Find and select the Action tab
+        for idx in range(self.dock_tabs.count()):
+            if self.dock_tabs.tabText(idx) == "Action":
+                self.dock_tabs.setCurrentIndex(idx)
+                break
+        # Also update the profile data's view type
+        if hasattr(self.profile_data, "current_view_type"):
+            self.profile_data.current_view_type = (
+                gremlin.ui.common.ContainerViewTypes.Action
+            )
+
+    def redraw(self):
+        gremlin.ui.common.clear_layout(self.action_layout)
+
+        # Only show the Macro instruction when the assigned action is a Macro.
+        has_macro_action = self._has_macro_action()
+        if has_macro_action:
+            self._add_instruction_box(self.action_layout)
+
+        if self.profile_data.action_sets and \
+                len(self.profile_data.action_sets[0]) > 0:
+            # Action is assigned — render it
+            for action in self.profile_data.action_sets[0]:
+                wrapped = gremlin.ui.input_item.BasicActionWrapper(action)
+                wrapped.closed.connect(self._create_closed_cb(action))
+                self.action_layout.addWidget(wrapped)
+            self.action_layout.addStretch(10)
+        else:
+            # No action yet — show the action-selector dropdown (below the
+            # instruction box which was already added)
+            if self.profile_data.get_device_type() == gremlin.common.DeviceType.VJoy:
+                sel = gremlin.ui.common.ActionSelector(
+                    gremlin.common.DeviceType.VJoy,
+                )
+            else:
+                sel = gremlin.ui.common.ActionSelector(
+                    self.profile_data.parent.input_type,
+                )
+            sel.action_added.connect(self._add_action)
+            self.action_layout.addWidget(sel)
 
     def _create_action_ui(self):
         """Creates the UI components."""
-        if len(self.profile_data.action_sets) > 0:
-            assert len(self.profile_data.action_sets) == 1
+        # Only add the instruction when the assigned action is a Macro.
+        if self._has_macro_action():
+            self._add_instruction_box(self.action_layout)
 
+        if self.profile_data.action_sets and \
+                len(self.profile_data.action_sets[0]) > 0:
+            assert len(self.profile_data.action_sets) == 1
             self.profile_data.create_or_delete_virtual_button()
             widget = self._create_action_set_widget(
                 self.profile_data.action_sets[0],
                 "Basic",
-                gremlin.ui.common.ContainerViewTypes.Action
+                gremlin.ui.common.ContainerViewTypes.Action,
             )
             self.action_layout.addWidget(widget)
             widget.redraw()
             widget.model.data_changed.connect(self.container_modified.emit)
         else:
             if self.profile_data.get_device_type() == gremlin.common.DeviceType.VJoy:
-                action_selector = gremlin.ui.common.ActionSelector(
-                    gremlin.common.DeviceType.VJoy
+                sel = gremlin.ui.common.ActionSelector(
+                    gremlin.common.DeviceType.VJoy,
                 )
             else:
-                action_selector = gremlin.ui.common.ActionSelector(
-                    self.profile_data.parent.input_type
+                sel = gremlin.ui.common.ActionSelector(
+                    self.profile_data.parent.input_type,
                 )
-            action_selector.action_added.connect(self._add_action)
-            self.action_layout.addWidget(action_selector)
+            sel.action_added.connect(self._add_action)
+            self.action_layout.addWidget(sel)
+
+    # ====== Helper methods ======
+
+    def _has_macro_action(self):
+        """Return True if the currently assigned action is a Macro.
+
+        :return True if the action is a Macro, False otherwise
+        """
+        if self.profile_data.action_sets and \
+                len(self.profile_data.action_sets[0]) > 0:
+            for action in self.profile_data.action_sets[0]:
+                if action.tag == "macro":
+                    return True
+        return False
+
+    def _add_instruction_box(self, layout):
+        """Add the instruction text box at the TOP of the given layout.
+
+        The box contains 3 lines of instructional text in orange font.
+        It's placed at index 0 so it stays above all other widgets.
+        """
+        # Container widget for the instruction text
+        widget = QtWidgets.QWidget()
+        widget_layout = QtWidgets.QVBoxLayout(widget)
+        widget_layout.setContentsMargins(6, 4, 6, 4)
+        widget_layout.setSpacing(0)
+
+        # Single text box with all 3 lines
+        instr = QtWidgets.QLabel(
+"Use Macro to build multi-step trigger sequences. Add new item, then map with drop down the required action.\n" \
+"Recording doesn't function as you would expected. The 'Macro Setting:' Doesn't function, but is being left\n" \
+"encase of further development. Macro is limited to only run one at a time. Multiple activations will be \n" \
+"queued up. Running Macros in Parallel leads to issues with button press/release misalighment.\n" \
+"For now cleanup & button management isn't worth implementing."
+        )
+        instr.setFont(QtGui.QFont("Sans", 10))
+        instr.setStyleSheet(
+            "color: #555; "
+            "background: #fdf5e6; "
+            "border: 1px solid #f0dcc0; "
+            "border-radius: 4px; "
+            "padding: 6px;"
+        )
+        instr.setAlignment(QtCore.Qt.AlignCenter)
+        instr.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
+        widget_layout.addWidget(instr)
+
+        # Add at position 0 (TOP of the layout) so it's above the
+        # action selector or action widgets
+        layout.insertWidget(0, widget)
+
+    # ====== Other methods (unchanged) ======
 
     def _create_condition_ui(self):
         if len(self.profile_data.action_sets) > 0 and \
                 self.profile_data.activation_condition_type == "action":
             assert len(self.profile_data.action_sets) == 1
-
             widget = self._create_action_set_widget(
                 self.profile_data.action_sets[0],
                 "Basic",
-                gremlin.ui.common.ContainerViewTypes.Condition
+                gremlin.ui.common.ContainerViewTypes.Condition,
             )
             self.activation_condition_layout.addWidget(widget)
             widget.redraw()
             widget.model.data_changed.connect(self.container_modified.emit)
 
     def _add_action(self, action_name):
-        """Adds a new action to the container.
-
-        :param action_name the name of the action to add
-        """
         plugin_manager = gremlin.plugin_manager.ActionPlugins()
         action_item = plugin_manager.get_class(action_name)(self.profile_data)
         self.profile_data.add_action(action_item)
         self.container_modified.emit()
 
     def _handle_interaction(self, widget, action):
-        """Handles interaction icons being pressed on the individual actions.
-
-        :param widget the action widget on which an action was invoked
-        :param action the type of action being invoked
-        """
         pass
 
     def _get_window_title(self):
-        """Returns the title to use for this container.
-
-        :return title to use for the container
-        """
         if len(self.profile_data.action_sets) > 0:
             return ", ".join(a.name for a in self.profile_data.action_sets[0])
-        else:
-            return "Basic"
+        return "Basic"
 
 
 class BasicContainerFunctor(gremlin.base_classes.AbstractFunctor):
@@ -110,16 +200,10 @@ class BasicContainerFunctor(gremlin.base_classes.AbstractFunctor):
     def __init__(self, container):
         super().__init__(container)
         self.action_set = gremlin.execution_graph.ActionSetExecutionGraph(
-            container.action_sets[0]
+            container.action_sets[0],
         )
 
     def process_event(self, event, value):
-        """Executes the content with the provided data.
-
-        :param event the event to process
-        :param value the value received with the event
-        :return True if execution was successful, False otherwise
-        """
         return self.action_set.process_event(event, value)
 
 
@@ -134,7 +218,7 @@ class BasicContainer(gremlin.base_classes.AbstractContainer):
         gremlin.common.InputType.JoystickAxis,
         gremlin.common.InputType.JoystickButton,
         gremlin.common.InputType.JoystickHat,
-        gremlin.common.InputType.Keyboard
+        gremlin.common.InputType.Keyboard,
     ]
     interaction_types = []
 
@@ -142,17 +226,11 @@ class BasicContainer(gremlin.base_classes.AbstractContainer):
     widget = BasicContainerWidget
 
     def __init__(self, parent=None):
-        """Creates a new instance.
-
-        :param parent the InputItem this container is linked to
-        """
         super().__init__(parent)
 
     def add_action(self, action, index=-1):
         assert isinstance(action, gremlin.base_classes.AbstractAction)
 
-        # Make sure if we're dealing with axis with remap and response curve
-        # actions that they are arranged sensibly
         if action.get_input_type() == gremlin.common.InputType.JoystickAxis:
             remap_sets = []
             curve_sets = []
@@ -184,17 +262,9 @@ class BasicContainer(gremlin.base_classes.AbstractContainer):
         self.create_or_delete_virtual_button()
 
     def _parse_xml(self, node):
-        """Populates the container with the XML node's contents.
-
-        :param node the XML node with which to populate the container
-        """
         pass
 
     def _generate_xml(self):
-        """Returns an XML node representing this container's data.
-
-        :return XML node representing the data of this container
-        """
         node = ElementTree.Element("container")
         node.set("type", "basic")
         as_node = ElementTree.Element("action-set")
@@ -204,10 +274,6 @@ class BasicContainer(gremlin.base_classes.AbstractContainer):
         return node
 
     def _is_container_valid(self):
-        """Returns whether or not this container is configured properly.
-
-        :return True if the container is configured properly, False otherwise
-        """
         return len(self.action_sets) == 1
 
 

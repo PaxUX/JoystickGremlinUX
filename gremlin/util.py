@@ -22,6 +22,7 @@ import math
 import os
 import re
 import sys
+import tempfile
 import threading
 import time
 
@@ -79,7 +80,14 @@ def is_user_admin():
 
     :return True if user has admin rights, False otherwise
     """
-    return ctypes.windll.shell32.IsUserAnAdmin() == 1
+    # Windows: use the Windows API call
+    if sys.platform == "win32":
+        try:
+            return ctypes.windll.shell32.IsUserAnAdmin() == 1
+        except Exception:
+            pass
+    # Linux: root is uid 0
+    return os.geteuid() == 0
 
 
 def axis_calibration(value, minimum, center, maximum):
@@ -152,11 +160,9 @@ def script_path():
 
 
 def userprofile_path():
-    """Returns the path to the user's profile folder, %userprofile%."""
-    return os.path.normcase(os.path.abspath(os.path.join(
-        os.getenv("userprofile"),
-        "Joystick Gremlin")
-    ))
+    """Returns the path to the user's profile folder."""
+    home = os.getenv("USERPROFILE") or os.getenv("HOME") or "/"
+    return os.path.join(home, "Joystick Gremlin")
 
 
 def resource_path(relative_path):
@@ -213,7 +219,7 @@ def valid_python_identifier(name):
     :param name the name to check for validity
     :return True if the name is a valid identifier, False otherwise
     """
-    return re.match("^[^\d\W]\w*\Z", name) is not None
+    return re.match(r"^{}\W]*\w*\Z", name) is not None
 
 
 def clamp(value, min_val, max_val):
@@ -343,3 +349,11 @@ def rad2deg(angle):
     :return angle in degree
     """
     return angle * (180.0 / math.pi)
+
+
+def get_temp_dir() -> str:
+    """Returns the system's temporary directory in a cross-platform manner.
+
+    :return path to the system temp directory
+    """
+    return tempfile.gettempdir()

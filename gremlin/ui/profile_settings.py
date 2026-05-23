@@ -235,11 +235,12 @@ class VJoyAxisDefaultsWidget(QtWidgets.QWidget):
             #   device's axes names when it is grabbed by another process
             #   and the inability of SDL to provide canonical axis names
             axis_name = "Axis {:d}".format(i+1)
-            try:
-                axis_name = vjoy_proxy[self.joy_data.vjoy_id]\
-                    .axis_name(linear_index=i+1)
-            except gremlin.error.VJoyError:
-                pass
+            if self.joy_data.vjoy_id > 0:
+                try:
+                    axis_name = vjoy_proxy[self.joy_data.vjoy_id]\
+                        .axis_name(linear_index=i+1)
+                except (gremlin.error.VJoyError, Exception):
+                    pass
             self.main_layout.addWidget(
                 QtWidgets.QLabel(axis_name),
                 i,
@@ -322,8 +323,9 @@ class VJoyAsInputWidget(QtWidgets.QGroupBox):
             "Declaring a vJoy device as an input device will allow it to be"
             "used like a physical device, i.e. it can be forwarded to other"
             "vJoy devices. However, this also means that it won't be available"
-            "as a virtual device."
-        )
+            "as a virtual device.\n\n"
+            "There is a new startup parameter to override the above, best to use ticks or overide, don't mix"
+            "\n\n-j, --joy\tEnable vJoy input/output device tabs"        )
         label.setStyleSheet("QLabel { background-color : '#FFF4B0'; }")
         label.setWordWrap(True)
         label.setFrameShape(QtWidgets.QFrame.Box)

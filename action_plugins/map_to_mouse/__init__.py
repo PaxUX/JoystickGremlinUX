@@ -19,13 +19,15 @@
 import logging
 import math
 import os
+import subprocess
 from xml.etree import ElementTree
 
-from PyQt5 import QtCore, QtWidgets
+from PyQt5 import QtCore, QtGui, QtWidgets
 
 from gremlin.base_classes import AbstractAction, AbstractFunctor
 from gremlin.common import InputType, MouseButton
 from gremlin.profile import read_bool, safe_read, safe_format
+from gremlin.tts import TextToSpeech
 from gremlin.util import rad2deg
 import gremlin.ui.common
 import gremlin.ui.input_item
@@ -53,30 +55,40 @@ class MapToMouseWidget(gremlin.ui.input_item.AbstractActionWidget):
         self.button_layout = QtWidgets.QGridLayout(self.button_widget)
         self.motion_widget = QtWidgets.QWidget()
         self.motion_layout = QtWidgets.QGridLayout(self.motion_widget)
+        self.xy_widget = QtWidgets.QWidget()
+        self.xy_layout = QtWidgets.QGridLayout(self.xy_widget)
 
         self.main_layout.addLayout(self.mode_layout)
         self.main_layout.addWidget(self.button_widget)
         self.main_layout.addWidget(self.motion_widget)
+        self.main_layout.addWidget(self.xy_widget)
 
         self.button_group = QtWidgets.QButtonGroup()
         self.button_radio = QtWidgets.QRadioButton("Button")
         self.motion_radio = QtWidgets.QRadioButton("Motion")
+        self.xy_radio = QtWidgets.QRadioButton("X/Y")
         self.button_group.addButton(self.button_radio)
         self.button_group.addButton(self.motion_radio)
+        self.button_group.addButton(self.xy_radio)
         self.mode_layout.addWidget(self.button_radio)
         self.mode_layout.addWidget(self.motion_radio)
+        self.mode_layout.addWidget(self.xy_radio)
         self.button_radio.clicked.connect(self._change_mode)
         self.motion_radio.clicked.connect(self._change_mode)
+        self.xy_radio.clicked.connect(self._change_mode)
 
         self.button_widget.hide()
         self.motion_widget.hide()
+        self.xy_widget.hide()
 
         # Create the different UI elements
         self._create_mouse_button_ui()
         if self.action_data.get_input_type() == InputType.JoystickAxis:
             self._create_axis_ui()
+            self._create_xy_ui()
         else:
             self._create_button_hat_ui()
+            self._create_xy_ui()
 
     def _create_axis_ui(self):
         """Creates the UI for axis setups."""
@@ -94,9 +106,9 @@ class MapToMouseWidget(gremlin.ui.input_item.AbstractActionWidget):
         self.motion_layout.addWidget(self.y_axis, 0, 2, 1, 2, QtCore.Qt.AlignLeft)
 
         self.min_speed = QtWidgets.QSpinBox()
-        self.min_speed.setRange(0, 1e5)
+        self.min_speed.setRange(0, int(1e5))
         self.max_speed = QtWidgets.QSpinBox()
-        self.max_speed.setRange(0, 1e5)
+        self.max_speed.setRange(0, int(1e5))
         self.motion_layout.addWidget(
             QtWidgets.QLabel("Minimum speed"), 1, 0, QtCore.Qt.AlignLeft
         )
@@ -111,9 +123,9 @@ class MapToMouseWidget(gremlin.ui.input_item.AbstractActionWidget):
     def _create_button_hat_ui(self):
         """Creates the UI for button setups."""
         self.min_speed = QtWidgets.QSpinBox()
-        self.min_speed.setRange(0, 1e5)
+        self.min_speed.setRange(0, int(1e5))
         self.max_speed = QtWidgets.QSpinBox()
-        self.max_speed.setRange(0, 1e5)
+        self.max_speed.setRange(0, int(1e5))
         self.time_to_max_speed = gremlin.ui.common.DynamicDoubleSpinBox()
         self.time_to_max_speed.setRange(0.0, 100.0)
         self.time_to_max_speed.setValue(0.0)
@@ -152,6 +164,46 @@ class MapToMouseWidget(gremlin.ui.input_item.AbstractActionWidget):
         self.button_layout.addWidget(QtWidgets.QLabel("Mouse Button"), 0, 0)
         self.button_layout.addWidget(self.mouse_button, 0, 1)
 
+    def _create_xy_ui(self):
+        self.xy_label = QtWidgets.QLabel("X / Y Coordinates")
+        self.xy_axis = QtWidgets.QLabel("Target:")
+        self.x_coord_label = QtWidgets.QLabel("X")
+        self.x_coord_label.setAlignment(QtCore.Qt.AlignCenter)
+        self.x_coord = QtWidgets.QSpinBox()
+        self.x_coord.setRange(0, int(1e5))
+        self.x_coord.setFocusPolicy(QtCore.Qt.StrongFocus)
+        self.y_coord_label = QtWidgets.QLabel("Y")
+        self.y_coord_label.setAlignment(QtCore.Qt.AlignCenter)
+        self.y_coord = QtWidgets.QSpinBox()
+        self.y_coord.setRange(0, int(1e5))
+        self.y_coord.setFocusPolicy(QtCore.Qt.StrongFocus)
+        self.capture_button = QtWidgets.QPushButton("Capture Position")
+        font = self.capture_button.font()
+        font.setPointSize(font.pointSize() + 2)
+        self.capture_button.setFont(font)
+        self.capture_button.setFixedWidth(160)
+        self.capture_button.clicked.connect(self._on_capture_position_clicked)
+        self.capture_delay_label = QtWidgets.QLabel("Mouse position will be read in (seconds):")
+        self.capture_delay = QtWidgets.QSpinBox()
+        self.capture_delay.setRange(1, 10)
+        self.capture_delay.setValue(3)
+
+        self.xy_layout.addWidget(self.xy_axis, 0, 0, QtCore.Qt.AlignLeft)
+        self.xy_layout.addWidget(self.x_coord_label, 0, 1, QtCore.Qt.AlignCenter)
+        self.xy_layout.addWidget(self.x_coord, 1, 1, QtCore.Qt.AlignLeft)
+        self.xy_layout.addWidget(QtWidgets.QLabel(", "), 0, 2, QtCore.Qt.AlignLeft)
+        self.xy_layout.addWidget(self.y_coord_label, 0, 3, QtCore.Qt.AlignCenter)
+        self.xy_layout.addWidget(self.y_coord, 1, 3, QtCore.Qt.AlignLeft)
+        self.xy_layout.addWidget(self.capture_button, 2, 1, 1, 2, QtCore.Qt.AlignHCenter)
+        self.xy_layout.addWidget(self.capture_delay_label, 3, 0, 1, 4, QtCore.Qt.AlignHCenter)
+        self.xy_layout.addWidget(self.capture_delay, 4, 1, 1, 2, QtCore.Qt.AlignHCenter)
+
+        self.capture_delay.valueChanged.connect(self._update_xy)
+        self.x_coord.valueChanged.connect(self._update_xy)
+        self.y_coord.valueChanged.connect(self._update_xy)
+
+        self.xy_widget.setLayout(self.xy_layout)
+
     def _populate_ui(self):
         """Populates the UI components."""
         if self.action_data.get_input_type() == InputType.JoystickAxis:
@@ -159,9 +211,17 @@ class MapToMouseWidget(gremlin.ui.input_item.AbstractActionWidget):
         else:
             self._populate_button_hat_ui()
         self._populate_mouse_button_ui()
+        self._populate_xy_ui()
 
-        self.motion_radio.setChecked(self.action_data.motion_input)
-        self.button_radio.setChecked(not self.action_data.motion_input)
+        if self.action_data.xy_mode:
+            self.xy_radio.setChecked(True)
+            self.button_radio.setChecked(False)
+            self.motion_radio.setChecked(False)
+        else:
+            self.motion_radio.setChecked(self.action_data.motion_input)
+            self.button_radio.setChecked(not self.action_data.motion_input)
+            self.xy_radio.setChecked(False)
+
         self._change_mode()
 
     def _populate_axis_ui(self):
@@ -189,6 +249,61 @@ class MapToMouseWidget(gremlin.ui.input_item.AbstractActionWidget):
         self.mouse_button.setText(
             gremlin.common.MouseButton.to_string(self.action_data.button_id)
         )
+
+    def _populate_xy_ui(self):
+        self._disconnect_xy()
+        self.x_coord.setValue(self.action_data.target_x)
+        self.y_coord.setValue(self.action_data.target_y)
+        self.capture_delay.setValue(self.action_data.capture_delay)
+        self._connect_xy()
+
+    def _disconnect_xy(self):
+        self.capture_delay.valueChanged.disconnect(self._update_xy)
+        self.x_coord.valueChanged.disconnect(self._update_xy)
+        self.y_coord.valueChanged.disconnect(self._update_xy)
+
+    def _connect_xy(self):
+        self.capture_delay.valueChanged.connect(self._update_xy)
+        self.x_coord.valueChanged.connect(self._update_xy)
+        self.y_coord.valueChanged.connect(self._update_xy)
+
+    def _on_capture_position_clicked(self) -> None:
+        """Starts the timed countdown to capture the current cursor position."""
+        delay = self.capture_delay.value()
+        self._tts = TextToSpeech()
+        self._countdown = delay
+        self._tts.speak(str(self._countdown))
+
+        self._timer = QtCore.QTimer()
+        self._timer.setSingleShot(False)
+        self._timer.timeout.connect(self._on_countdown_tick)
+        self._timer.start(1000)
+
+    def _on_countdown_tick(self) -> None:
+        """Handles a single countdown tick (every second)."""
+        self._countdown -= 1
+
+        if self._countdown > 0:
+            # Still counting down — speak remaining seconds
+            self._tts.speak(str(self._countdown))
+        else:
+            # Countdown finished — stop timer, capture cursor position
+            self._timer.stop()
+
+            pos = QtGui.QCursor.pos()
+            x, y = pos.x(), pos.y()
+
+            self.x_coord.setValue(x)
+            self.y_coord.setValue(y)
+            self.action_data.target_x = x
+            self.action_data.target_y = y
+
+            self._tts.speak("Position captured")
+
+    def _update_xy(self):
+        self.action_data.target_x = self.x_coord.value()
+        self.action_data.target_y = self.y_coord.value()
+        self.action_data.capture_delay = self.capture_delay.value()
 
     def _update_axis(self):
         """Updates the axis data with UI information."""
@@ -238,10 +353,10 @@ class MapToMouseWidget(gremlin.ui.input_item.AbstractActionWidget):
         self._connect_button_hat()
 
     def _update_mouse_button(self, event):
+        import sys
         self.action_data.button_id = event.identifier
-        self.mouse_button.setText(
-            gremlin.common.MouseButton.to_string(self.action_data.button_id)
-        )
+        new_text = gremlin.common.MouseButton.to_string(self.action_data.button_id)
+        self.mouse_button.setText(new_text)
 
     def _connect_axis(self):
         """Connects all axis input elements to their callbacks."""
@@ -273,12 +388,19 @@ class MapToMouseWidget(gremlin.ui.input_item.AbstractActionWidget):
 
     def _change_mode(self):
         self.action_data.motion_input = self.motion_radio.isChecked()
-        if self.action_data.motion_input:
+        self.action_data.xy_mode = self.xy_radio.isChecked()
+        if self.action_data.xy_mode:
+            self.button_widget.hide()
+            self.motion_widget.hide()
+            self.xy_widget.show()
+        elif self.action_data.motion_input:
             self.button_widget.hide()
             self.motion_widget.show()
+            self.xy_widget.hide()
         else:
             self.button_widget.show()
             self.motion_widget.hide()
+            self.xy_widget.hide()
 
         # Emit modification signal to ensure virtual button settings
         # are updated correctly
@@ -299,8 +421,8 @@ class MapToMouseWidget(gremlin.ui.input_item.AbstractActionWidget):
         geom = root.geometry()
 
         self.button_press_dialog.setGeometry(
-            geom.x() + geom.width() / 2 - 150,
-            geom.y() + geom.height() / 2 - 75,
+            geom.x() + geom.width() // 2 - 150,
+            geom.y() + geom.height() // 2 - 75,
             300,
             150
         )
@@ -327,7 +449,9 @@ class MapToMouseFunctor(AbstractFunctor):
         self.mouse_controller = gremlin.sendinput.MouseController()
 
     def process_event(self, event, value):
-        if self.config.motion_input:
+        if self.config.xy_mode:
+            self._perform_xy_motion(event, value)
+        elif self.config.motion_input:
             if event.event_type == InputType.JoystickAxis:
                 self._perform_axis_motion(event, value)
             elif event.event_type == InputType.JoystickHat:
@@ -336,6 +460,22 @@ class MapToMouseFunctor(AbstractFunctor):
                 self._perform_button_motion(event, value)
         else:
             self._perform_mouse_button(event, value)
+
+    def _perform_xy_motion(self, event, value) -> None:
+        """Moves the cursor to the captured X/Y coordinates."""
+        target_x = self.config.target_x
+        target_y = self.config.target_y
+        try:
+            subprocess.run(
+                ["xdotool", "mousemove", str(target_x), str(target_y)],
+                timeout=5,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            logging.getLogger("system").warning(
+                "Could not move mouse: xdotool not available or timed out"
+            )
 
     def _perform_mouse_button(self, event, value):
         assert self.config.motion_input is False
@@ -426,6 +566,8 @@ class MapToMouse(AbstractAction):
 
         # Flag whether or not this is mouse motion or button press
         self.motion_input = False
+        # Flag for XY mode
+        self.xy_mode = False
         # Mouse button enum
         self.button_id = gremlin.common.MouseButton.Left
         # Angle of motion, 0 is up and 90 is right, etc.
@@ -436,6 +578,11 @@ class MapToMouse(AbstractAction):
         self.max_speed = 15
         # Time to reach maximum speed in sec
         self.time_to_max_speed = 1.0
+        # XY target coordinates
+        self.target_x = 0
+        self.target_y = 0
+        # Capture delay in seconds
+        self.capture_delay = 1
 
     def icon(self):
         """Returns the icon to use for this action.
@@ -462,6 +609,7 @@ class MapToMouse(AbstractAction):
             instance
         """
         self.motion_input = read_bool(node, "motion-input", False)
+        self.xy_mode = read_bool(node, "xy-mode", False)
         try:
             self.button_id = gremlin.common.MouseButton(
                 safe_read(node, "button-id", int, 1)
@@ -475,6 +623,9 @@ class MapToMouse(AbstractAction):
         self.min_speed = safe_read(node, "min-speed", int, 5)
         self.max_speed = safe_read(node, "max-speed", int, 5)
         self.time_to_max_speed = safe_read(node, "time-to-max-speed", float, 0.0)
+        self.target_x = safe_read(node, "target-x", int, 0)
+        self.target_y = safe_read(node, "target-y", int, 0)
+        self.capture_delay = safe_read(node, "capture-delay", int, 1)
 
     def _generate_xml(self):
         """Returns an XML node containing this instance's information.
@@ -484,11 +635,15 @@ class MapToMouse(AbstractAction):
         node = ElementTree.Element("map-to-mouse")
 
         node.set("motion-input", safe_format(self.motion_input, bool))
+        node.set("xy-mode", safe_format(self.xy_mode, bool))
         node.set("button-id", safe_format(self.button_id.value, int))
         node.set("direction", safe_format(self.direction, int))
         node.set("min-speed", safe_format(self.min_speed, int))
         node.set("max-speed", safe_format(self.max_speed, int))
         node.set("time-to-max-speed", safe_format(self.time_to_max_speed, float))
+        node.set("target-x", safe_format(self.target_x, int))
+        node.set("target-y", safe_format(self.target_y, int))
+        node.set("capture-delay", safe_format(self.capture_delay, int))
 
         return node
 

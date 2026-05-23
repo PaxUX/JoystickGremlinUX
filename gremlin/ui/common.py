@@ -16,11 +16,14 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 import enum
+import logging
 import threading
 
 from PyQt5 import QtWidgets, QtCore, QtGui
 
 import gremlin
+
+logger = logging.getLogger("system")
 
 
 class ContainerViewTypes(enum.Enum):
@@ -840,7 +843,9 @@ class BaseDialogUi(QtWidgets.QWidget):
 
         :param event the close event
         """
+        event.accept()
         self.closed.emit()
+        #event.accept()
 
 
 class ModeWidget(QtWidgets.QWidget):
@@ -1003,7 +1008,11 @@ class InputListenerWidget(QtWidgets.QFrame):
         self.filter_func = filter_func
 
         self._abort_timer = threading.Timer(1.0, self.close)
-        self._multi_key_storage = []
+        self._multi_key_storage = []  # Captured key IDs (only grows during capture)
+        self._held_keys = set()           # Currently held keys being released
+        self._result_keys = None          # Result to pass to callback (captured before close)
+        self._is_closing = False          # Prevent double-close during widget lifecycle
+        self._close_timer = None          # Timer for safe close on GUI thread
 
         # Create and configure the ui overlay
         self.main_layout = QtWidgets.QVBoxLayout(self)
@@ -1019,15 +1028,19 @@ class InputListenerWidget(QtWidgets.QFrame):
         self.setWindowFlags(QtCore.Qt.FramelessWindowHint)
         self.setFrameStyle(QtWidgets.QFrame.Plain | QtWidgets.QFrame.Box)
         palette = QtGui.QPalette()
-        palette.setColor(QtGui.QPalette.Background, QtCore.Qt.darkGray)
+        palette.setColor(QtGui.QPalette.Window, QtCore.Qt.darkGray)
         self.setPalette(palette)
 
         # Disable ui input selection on joystick input
         gremlin.shared_state.set_suspend_input_highlighting(True)
 
+        # Store a reference to self to prevent premature GC
+        gc = self  # Hold reference alive
+
         # Start listening to user key presses
         event_listener = gremlin.event_handler.EventListener()
         event_listener.keyboard_event.connect(self._kb_event_cb)
+
         if gremlin.common.InputType.JoystickAxis in self._event_types or \
                 gremlin.common.InputType.JoystickButton in self._event_types or \
                 gremlin.common.InputType.JoystickHat in self._event_types:
@@ -1035,6 +1048,11 @@ class InputListenerWidget(QtWidgets.QFrame):
         elif gremlin.common.InputType.Mouse in self._event_types:
             gremlin.windows_event_hook.MouseHook().start()
             event_listener.mouse_event.connect(self._mouse_event_cb)
+
+        # Store a reference to the event listener so we can disconnect it on close
+        self._event_listener = event_listener
+        self._callback_result = None  # Stores result from callback for mouse/key events
+
 
     def _joy_event_cb(self, event):
         """Passes the pressed joystick event to the provided callback
@@ -1075,58 +1093,104 @@ class InputListenerWidget(QtWidgets.QFrame):
                 event.identifier[0],
                 event.identifier[1]
         )
+        esc_key = gremlin.macro.key_from_name("esc")
 
-        # Return immediately once the first key press is detected
-        if not self._multi_keys:
-            if event.is_pressed and key == gremlin.macro.key_from_name("esc"):
-                if not self._abort_timer.is_alive():
-                    self._abort_timer.start()
-            elif not event.is_pressed and \
-                    gremlin.common.InputType.Keyboard in self._event_types:
-                if not self._return_kb_event:
-                    self.callback(key)
+        # ESC abort for all event types
+        if esc_key is not None and key == esc_key:
+            if event.is_pressed and not self._abort_timer.is_alive():
+                self._abort_timer.start()
+            elif not event.is_pressed:
+                logger.info("[DIAG] ESC release detected — timer started for close")
+                self._abort_timer.cancel()
+                self._abort_timer = threading.Timer(1.0, self.close)
+                self._abort_timer.start()
+            return
+
+        # Only process keyboard events if keyboard is one of the accepted types
+        if gremlin.common.InputType.Keyboard in self._event_types:
+            if self._multi_keys:
+                key_id = (key.scan_code, key.is_extended)
+                if event.is_pressed:
+                    # Press: track in both storage (captured) and held (current)
+                    if key_id not in self._multi_key_storage:
+                        self._multi_key_storage.append(key_id)
+                    self._held_keys.add(key_id)
                 else:
-                    self.callback(event)
-                self._abort_timer.cancel()
-                self.close()
-        # Record all key presses and return on the first key release
-        else:
-            if event.is_pressed:
-                if gremlin.common.InputType.Keyboard in self._event_types:
-                    if not self._return_kb_event:
-                        self._multi_key_storage.append(key)
-                    else:
-                        self._multi_key_storage.append(event)
-                if key == gremlin.macro.key_from_name("esc"):
-                    # Start a timer and close if it expires, aborting the
-                    # user input request
-                    if not self._abort_timer.is_alive():
-                        self._abort_timer.start()
+                    # Key release: remove from held only, stored values stay for result
+                    self._held_keys.discard(key_id)
+                    # Only call callback when ALL keys have been released
+                    if not self._held_keys and not self._is_closing:
+                        self._is_closing = True
+                        # Capture result keys NOW before any close() call
+                        captured_keys = [
+                            gremlin.macro.key_from_code(sc, ext)
+                            for sc, ext in self._multi_key_storage
+                        ]
+                        logger.info("[DIAG] multi-key capture complete: %d keys — %s",
+                                   len(captured_keys),
+                                   [(sc, ext) for sc, ext in self._multi_key_storage])
+                        # Schedule close on GUI thread so widget stays alive during callback
+                        self._result_keys = captured_keys
+                        self._close_timer = QtCore.QTimer()
+                        self._close_timer.setSingleShot(True)
+                        self._close_timer.timeout.connect(self._do_close)
+                        self._close_timer.start(0)
             else:
-                self._abort_timer.cancel()
-                self.callback(self._multi_key_storage)
-                self.close()
-
-        # Ensure the timer is cancelled and reset in case the ESC is released
-        # and we're not looking to return keyboard events
-        if key == gremlin.macro.key_from_name("esc") and not event.is_pressed:
-            self._abort_timer.cancel()
-            self._abort_timer = threading.Timer(1.0, self.close)
+                if not event.is_pressed:
+                    if not self._return_kb_event:
+                        self.callback(key)
+                    else:
+                        self.callback(event)
+                    self.close()
 
     def _mouse_event_cb(self, event):
+        logger.info("[DIAG] _mouse_event_cb fired: type=%r id=%r is_pressed=%r",
+                    event.event_type, event.identifier, event.is_pressed)
+        logger.info("[DIAG] callback is: %s", self.callback)
         self.callback(event)
+        # Close only on release; ignore press events so the popup stays open
+        logger.info("[DIAG] callback returned — is_pressed=%r", event.is_pressed)
+        if not event.is_pressed:
+            logger.info("[DIAG] closing InputListenerWidget on release")
+            self.close()
+
+    def _do_close(self):
+        """Called on GUI thread: deliver captured keys to callback, then close widget."""
+        logger.info("[DIAG] _do_close called: _is_closing=%s, _result_keys=%s", self._is_closing, 
+                    len(self._result_keys) if self._result_keys else None)
+        if self._result_keys is not None and self.callback is not None:
+            logger.info("[DIAG] _do_close: firing callback with %d keys", len(self._result_keys))
+            self.callback(self._result_keys)
+            self._result_keys = None  # Clear so it doesn't fire again
+        else:
+            logger.info("[DIAG] _do_close: callback or keys is None, skipping callback")
         self.close()
 
     def closeEvent(self, evt):
         """Closes the overlay window."""
-        event_listener = gremlin.event_handler.EventListener()
-        event_listener.keyboard_event.disconnect(self._kb_event_cb)
+        # Use the same EventListener instance that the connection was made on.
+        # The event_listener may be None if __init__ was interrupted before
+        # the attribute was set (e.g. during startup).
+        event_listener = getattr(self, "_event_listener", None)
+        if event_listener is not None:
+            try:
+                event_listener.keyboard_event.disconnect(self._kb_event_cb)
+            except TypeError:
+                pass  # already disconnected (e.g., closeEvent called twice)
         if gremlin.common.InputType.JoystickAxis in self._event_types or \
                 gremlin.common.InputType.JoystickButton in self._event_types or \
                 gremlin.common.InputType.JoystickHat in self._event_types:
-            event_listener.joystick_event.disconnect(self._joy_event_cb)
+            if event_listener is not None:
+                try:
+                    event_listener.joystick_event.disconnect(self._joy_event_cb)
+                except TypeError:
+                    pass  # connection may have been removed already
         elif gremlin.common.InputType.Mouse in self._event_types:
-            event_listener.mouse_event.disconnect(self._mouse_event_cb)
+            if event_listener is not None:
+                try:
+                    event_listener.mouse_event.disconnect(self._mouse_event_cb)
+                except TypeError:
+                    pass  # connection may have been removed already
 
         # Stop mouse hook in case it is running
         gremlin.windows_event_hook.MouseHook().stop()
@@ -1135,6 +1199,15 @@ class InputListenerWidget(QtWidgets.QFrame):
         # moved to return to its center without triggering an input highlight
         gremlin.shared_state.delayed_input_highlighting_suspension()
         super().closeEvent(evt)
+
+
+
+    def keyPressEvent(self, evt):
+        """Catch ESC here so that the modal dialog intercept doesn't block it."""
+        if evt.key() == QtCore.Qt.Key_Escape:
+            if not self._abort_timer.is_alive():
+                self._abort_timer.start()
+        super().keyPressEvent(evt)
 
     def _valid_event_types_string(self):
         """Returns a formatted string containing the valid event types.

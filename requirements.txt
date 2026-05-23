@@ -1,0 +1,38 @@
+# JoystickGremlin Linux — Runtime Dependencies
+# ===================================================
+# Packages installed via: pip install -r requirements.txt
+#
+# Windows dependencies (pywin32) are NOT listed here.
+# The codebase uses PyQt5 on Linux.
+
+# ===================================================
+# GUI Framework
+# ===================================================
+PyQt5 >=5.15.0
+
+# ===================================================
+# Linux Hardware Input
+# ===================================================
+evdev >=1.6.0
+
+# ===================================================
+# Build / Optional Utilities
+# ===================================================
+reportlab >=4.0.0
+
+# ===================================================
+# Text-to-Speech (optional — enables the Text to Speech action)
+# Requires system-level packages (NOT pip):
+#   apt install espeak-ng alsa-utils
+#
+# Backend priority (checked at import time):
+#   1. espeak-ng → aplay (primary, direct, no daemon required)
+#      Core synthesiser + ALSA audio player
+#   2. speech-dispatcher (fallback — requires running speechd service)
+#      Higher quality voices but fragile; spd-say is the CLI client
+# ===================================================
+
+# ===================================================
+# Code Quality
+# ===================================================
+ruff

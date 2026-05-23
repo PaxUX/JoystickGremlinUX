@@ -20,978 +20,1060 @@ import ctypes
 from ctypes import wintypes
 import functools
 import logging
+import os
+import sys
 import time
+import threading
+
 from threading import Event, Lock, Thread
 from xml.etree import ElementTree
 
-import win32con
-import win32api
+from . import common
+import gremlin.key_codes as key_codes
+from gremlin.common import InputType
 
-import gremlin
+logger = logging.getLogger("system")
+# win32api/win32con stub for Linux
+# ==========================================================================
+try:
+    import win32con
+    import win32api
+except ImportError:
+    # Linux: provide minimal win32con/win32api stubs for UI/build-time
+    if sys.platform.startswith("win"):
+        raise  # Re-raise on Windows if pywin32 is actually missing
 
+    class _win32con_stub:
+        """Minimal win32con stub providing virtual key codes needed at import
+        time only. The actual keybd_event calls are stubbed by _win32api_stub."""
+        VK_BACK = 0x08
+        VK_TAB = 0x09
+        VK_BACKPACK_BUTTON = 0x7E
+        VK_F1 = 0x70
+        VK_F2 = 0x71
+        VK_F3 = 0x72
+        VK_F4 = 0x73
+        VK_F5 = 0x74
+        VK_F6 = 0x75
+        VK_F7 = 0x76
+        VK_F8 = 0x77
+        VK_F9 = 0x78
+        VK_F10 = 0x79
+        VK_F11 = 0x7A
+        VK_F12 = 0x7B
+        VK_ESCAPE = 0x1B
+        VK_SPACE = 0x20
+        VK_PRIOR = 0x21
+        VK_NEXT = 0x22
+        VK_END = 0x23
+        VK_HOME = 0x24
+        VK_LEFT = 0x25
+        VK_UP = 0x26
+        VK_RIGHT = 0x27
+        VK_DOWN = 0x28
+        VK_INSERT = 0x2D
+        VK_DELETE = 0x2E
+        VK_LWIN = 0x5B
+        VK_RWIN = 0x5C
+        VK_LSHIFT = 0xA0
+        VK_RSHIFT = 0xA1
+        VK_LCONTROL = 0xA2
+        VK_RCONTROL = 0xA3
+        VK_LMENU = 0xA4
+        VK_RMENU = 0xA5
+        VK_LBUTTON = 0x01
+        VK_RBUTTON = 0x02
+        VK_MBUTTON = 0x04
+        VK_XBUTTON1 = 0x05
+        VK_XBUTTON2 = 0x06
+        VK_NUMPAD0 = 0x60
+        VK_NUMPAD1 = 0x61
+        VK_NUMPAD2 = 0x62
+        VK_NUMPAD3 = 0x63
+        VK_NUMPAD4 = 0x64
+        VK_NUMPAD5 = 0x65
+        VK_NUMPAD6 = 0x66
+        VK_NUMPAD7 = 0x67
+        VK_NUMPAD8 = 0x68
+        VK_NUMPAD9 = 0x69
+        VK_MULTIPLY = 0x6A
+        VK_ADD = 0x6B
+        VK_SEPARATOR = 0x6C
+        VK_SUBTRACT = 0x6D
+        VK_DECIMAL = 0x6E
+        VK_DIVIDE = 0x6F
+        VK_NUMLOCK = 0x90
+        VK_CAPITAL = 0x14
+        VK_SHIFT = 0x10
+        VK_CONTROL = 0x11
+        VK_MENU = 0x12
+        VK_PAUSE = 0x13
+        VK_RETURN = 0x0D
+        VK_CONVERT = 0x18
+        VK_NONCONVERT = 0x19
+        VK_ACCEPT = 0x1E
+        VK_MODECHANGE = 0x1F
+        VK_0 = 0x30
+        VK_1 = 0x31
+        VK_2 = 0x32
+        VK_3 = 0x33
+        VK_4 = 0x34
+        VK_5 = 0x35
+        VK_6 = 0x36
+        VK_7 = 0x37
+        VK_8 = 0x38
+        VK_9 = 0x39
+        VK_A = 0x41
+        VK_B = 0x42
+        VK_C = 0x43
+        VK_D = 0x44
+        VK_E = 0x45
+        VK_F = 0x46
+        VK_G = 0x47
+        VK_H = 0x48
+        VK_I = 0x49
+        VK_J = 0x4A
+        VK_K = 0x4B
+        VK_L = 0x4C
+        VK_M = 0x4D
+        VK_N = 0x4E
+        VK_O = 0x4F
+        VK_P = 0x50
+        VK_Q = 0x51
+        VK_R = 0x52
+        VK_S = 0x53
+        VK_T = 0x54
+        VK_U = 0x55
+        VK_V = 0x56
+        VK_W = 0x57
+        VK_X = 0x58
+        VK_Y = 0x59
+        VK_Z = 0x5A
+        VK_PRINT = 0x2C
+        VK_SCROLL = 0x46
+        VK_APPS = 0x5D
 
-MacroEntry = collections.namedtuple(
-    "MacroEntry",
-    ["macro", "state"]
-)
+        KEYEVENTF_KEYUP = 0x02
+        KEYEVENTF_EXTENDEDKEY = 0x01
+        KEYEVENTF_UNICODE = 0x04
 
+    win32con = _win32con_stub()
 
-def _create_function(lib_name, fn_name, param_types, return_type):
-    """Creates a handle to a windows dll library function.
-
-    :param lib_name name of the library to retrieve a function handle from
-    :param fn_name name of the function
-    :param param_types input parameter types
-    :param return_type return parameter type
-    :return function handle
-    """
-    fn = getattr(ctypes.WinDLL(lib_name), fn_name)
-    fn.argtypes = param_types
-    fn.restype = return_type
-    return fn
-
-
-# https://msdn.microsoft.com/en-us/library/windows/desktop/ms646296(v=vs.85).aspx
-_get_keyboard_layout = _create_function(
-    "user32",
-    "GetKeyboardLayout",
-    [wintypes.DWORD],
-    wintypes.HKL
-)
-
-
-# https://msdn.microsoft.com/en-us/library/windows/desktop/ms646299(v=vs.85).aspx
-_get_keyboard_state = _create_function(
-    "user32",
-    "GetKeyboardState",
-    [ctypes.POINTER(ctypes.c_char)],
-    wintypes.BOOL
-)
-
-
-# https://msdn.microsoft.com/en-us/library/windows/desktop/ms646307(v=vs.85).aspx
-_map_virtual_key_ex = _create_function(
-    "user32",
-    "MapVirtualKeyExW",
-    [ctypes.c_uint, ctypes.c_uint, wintypes.HKL],
-    ctypes.c_uint
-)
-
-
-# https://msdn.microsoft.com/en-us/library/windows/desktop/ms646322(v=vs.85).aspx
-_to_unicode_ex = _create_function(
-    "user32",
-    "ToUnicodeEx",
-    [
-        ctypes.c_uint,
-        ctypes.c_uint,
-        ctypes.POINTER(ctypes.c_char),
-        ctypes.POINTER(ctypes.c_wchar),
-        ctypes.c_int,
-        ctypes.c_uint,
-        ctypes.c_void_p
-    ],
-    ctypes.c_int
-)
-
-
-# https://msdn.microsoft.com/en-us/library/windows/desktop/ms646332(v=vs.85).aspx
-_vk_key_scan_ex = _create_function(
-    "user32",
-    "VkKeyScanExW",
-    [ctypes.c_wchar, wintypes.HKL],
-    ctypes.c_short
-)
-
-
-def _scan_code_to_virtual_code(scan_code, is_extended):
-    """Returns the virtual code corresponding to the given scan code.
-
-    :param scan_code scan code value to translate
-    :param is_extended whether or not the scan code is extended
-    :return virtual code corresponding to the given scan code
-    """
-    value = scan_code
-    if is_extended:
-        value = 0xe0 << 8 | scan_code
-
-    virtual_code = _map_virtual_key_ex(value, 3, _get_keyboard_layout(0))
-    return virtual_code
-
-
-def _virtual_input_to_unicode(virtual_code):
-    """Returns the unicode character corresponding to a given virtual code.
-
-    :param virtual_code virtual code for which to return a unicode character
-    :return unicode character corresponding to the given virtual code
-    """
-    keyboard_layout = _get_keyboard_layout(0)
-    output_buffer = ctypes.create_unicode_buffer(8)
-    state_buffer = ctypes.create_string_buffer(256)
-
-    # Translate three times to get around dead keys showing up in funny ways
-    # as the translation takes them into account for future keys
-    state = _to_unicode_ex(
-        virtual_code,
-        0x00,
-        state_buffer,
-        output_buffer,
-        8,
-        0,
-        keyboard_layout
-    )
-    state = _to_unicode_ex(
-        virtual_code,
-        0x00,
-        state_buffer,
-        output_buffer,
-        8,
-        0,
-        keyboard_layout
-    )
-    state = _to_unicode_ex(
-        virtual_code,
-        0x00,
-        state_buffer,
-        output_buffer,
-        8,
-        0,
-        keyboard_layout
-    )
-
-    if state == 0:
-        logging.getLogger("system").error(
-            "No translation for key {} available".format(hex(virtual_code))
-        )
-        return str(hex(virtual_code))
-    return output_buffer.value.upper()
-
-
-def _unicode_to_key(character):
-    """Returns a Key instance corresponding to the given character.
-
-    :param character the character for which to generate a Key instance
-    :return Key instance for the given character, or None if an error occurred
-    """
-    if len(character) != 1:
-        return None
-
-    virtual_code = _vk_key_scan_ex(character, _get_keyboard_layout(0)) & 0x00FF
-    if virtual_code == 0xFF:
-        return None
-
-    code_value = _map_virtual_key_ex(virtual_code, 4, _get_keyboard_layout(0))
-    scan_code = code_value & 0xFF
-    is_extended = False
-    if code_value << 8 & 0xE0 or code_value << 8 & 0xE1:
-        is_extended = True
-    return Key(character, scan_code, is_extended, virtual_code)
-
-
-def _send_key_down(key):
-    """Sends the KEYDOWN event for a single key.
-
-    :param key the key for which to send the KEYDOWN event
-    """
-    flags = win32con.KEYEVENTF_EXTENDEDKEY if key.is_extended else 0
-    win32api.keybd_event(key.virtual_code, key.scan_code, flags, 0)
-
-
-def _send_key_up(key):
-    """Sends the KEYUP event for a single key.
-
-    :param key the key for which to send the KEYUP event
-    """
-    flags = win32con.KEYEVENTF_EXTENDEDKEY if key.is_extended else 0
-    flags |= win32con.KEYEVENTF_KEYUP
-    win32api.keybd_event(key.virtual_code, key.scan_code, flags, 0)
-
-
-@gremlin.common.SingletonDecorator
-class MacroManager:
-
-    """Manages the proper dispatching and scheduling of macros."""
-
-    def __init__(self):
-        """Initializes the instance."""
-        self._active = {}
-        self._queue = []
-        self._flags = {}
-        self._flags_lock = Lock()
-        self._queue_lock = Lock()
-
-        # Default delay between subsequent message dispatch. This is to get
-        # around some games not picking up messages if they are sent in too
-        # quick a succession.
-        self.default_delay = 0.05
-
-        self._is_executing_exclusive = False
-        self._is_running = False
-        self._schedule_event = Event()
-
-        self._run_scheduler_thread = None
-
-    def start(self):
-        """Starts the scheduler."""
-        self._active = {}
-        self._flags = {}
-        self._is_running = True
-        if self._run_scheduler_thread is None:
-            self._run_scheduler_thread = Thread(target=self._run_scheduler)
-        if not self._run_scheduler_thread.is_alive():
-            self._run_scheduler_thread.start()
-
-    def stop(self):
-        """Stops the scheduler."""
-        self._is_running = False
-        if self._run_scheduler_thread is not None and \
-                self._run_scheduler_thread.is_alive():
-
-            # Terminate the scheduler
-            self._schedule_event.set()
-            self._run_scheduler_thread.join()
-            self._run_scheduler_thread = None
-
-            # Terminate any macro that is still active
-            with self._flags_lock:
-                for key, value in self._flags.items():
-                    self._flags[key] = False
-
-    def queue_macro(self, macro):
-        """Queues a macro in the schedule taking the repeat type into account.
-
-        :param macro the macro to add to the scheduler
+    class _win32api_stub:
+        """Stub for win32api.keybd_event and related functions.
+        On Linux these are no-ops because we have no raw HID injection.
+        
+        NOTE: This is where keys SHOULD be injected on Linux.
+        Currently a no-op. Logging shows what key should be activated.
         """
-        if isinstance(macro.repeat, ToggleRepeat) and macro.id in self._active:
-            self.terminate_macro(macro)
-        else:
-            # Preprocess macro to contain pauses as necessary
-            self._preprocess_macro(macro)
-            with self._queue_lock:
-                self._queue.append(MacroEntry(macro, True))
-            self._schedule_event.set()
-
-    def terminate_macro(self, macro):
-        """Adds a termination request for a macro to the execution queue.
-
-        :param macro the macro to terminate
-        """
-        self._queue.append(MacroEntry(macro, False))
-        self._schedule_event.set()
-
-    def _run_scheduler(self):
-        """Dispatches macros as required."""
-        while self._is_running:
-            # Wake up when the event triggers and reset it
-            self._schedule_event.wait()
-            self._schedule_event.clear()
-
-            # Run scheduled macros and ensure exclusive ones run separately
-            # from all other macros
-            with self._queue_lock:
-                entries_to_remove = []
-                has_exclusive = False
-                for i, entry in enumerate(self._queue):
-                    # Terminate macro if needed
-                    if entry.state is False:
-                        if entry.macro.id in self._flags \
-                                and self._flags[entry.macro.id]:
-                            # Terminate currently running macro
-                            with self._flags_lock:
-                                self._flags[entry.macro.id] = False
-                            # del self._queue[i]
-
-                            # Remove all queued up macros with the same id as
-                            # they should have been impossible to queue up
-                            # in the first place
-                            removal_list = []
-                            for queue_entry in self._queue:
-                                if queue_entry.macro.id == entry.macro.id:
-                                    removal_list.append(queue_entry)
-                            for queue_entry in removal_list:
-                                self._queue.remove(queue_entry)
-                    # Don't run a queued macro if the same instance is already
-                    # running
-                    elif entry.macro.id in self._active:
-                        continue
-                    # Handle exclusive macros
-                    elif entry.macro.exclusive:
-                        has_exclusive = True
-                        if len(self._active) == 0:
-                            self._dispatch_macro(entry.macro)
-                            self._is_executing_exclusive = True
-                            entries_to_remove.append(entry)
-                    # Start a queued up macro
-                    elif not has_exclusive and not self._is_executing_exclusive:
-                        self._dispatch_macro(entry.macro)
-                        entries_to_remove.append(entry)
-
-                # Remove all entries we've processed
-                for entry in entries_to_remove:
-                    if entry in self._queue:
-                        self._queue.remove(entry)
-
-    def _dispatch_macro(self, macro):
-        """Dispatches a single macro to be run.
-
-        :param macro the macro to dispatch
-        """
-        if macro.id not in self._active:
-            self._active[macro.id] = macro
-            Thread(target=functools.partial(self._execute_macro, macro)).start()
-        else:
-            logging.getLogger("system").warning(
-                "Attempting to dispatch an already running macro"
-            )
-
-    def _execute_macro(self, macro):
-        """Executes a given macro in a separate thread.
-
-        This method will run all provided actions and once they all have been
-        executed will remove the macro from the set of active macros and
-        inform the scheduler of the completion.
-
-        :param macro the macro object to be executed
-        """
-        # Handle macros with a repeat mode
-        if macro.repeat is not None:
-            delay = macro.repeat.delay
-
-            with self._flags_lock:
-                self._flags[macro.id] = True
-
-            # Handle count repeat mode
-            if isinstance(macro.repeat, CountRepeat):
-                count = 0
-                while count < macro.repeat.count and self._flags[macro.id]:
-                    for action in macro.sequence:
-                        action()
-                    count += 1
-                    time.sleep(delay)
-
-            # Handle continuous repeat modes
-            elif type(macro.repeat) in [HoldRepeat, ToggleRepeat]:
-                while self._flags[macro.id]:
-                    for action in macro.sequence:
-                        action()
-                    time.sleep(delay)
-
-        # Handle simple one shot macros
-        else:
-            for action in macro.sequence:
-                action()
-
-        # Remove macro from active set, notify manager, and remove any
-        # potential callbacks
-        del self._active[macro.id]
-        if macro.exclusive:
-            self._is_executing_exclusive = False
-        with self._flags_lock:
-            if macro.id in self._flags:
-                self._flags[macro.id] = False
-        self._schedule_event.set()
-
-    def _preprocess_macro(self, macro):
-        """Inserts pauses as necessary into the macro."""
-        new_sequence = [macro.sequence[0]]
-        for a1, a2 in zip(macro.sequence[:-1], macro.sequence[1:]):
-            if isinstance(a1, PauseAction) or isinstance(a2, PauseAction):
-                new_sequence.append(a2)
+        @staticmethod
+        def keybd_event(vKey, bScan, dwFlags, dwExtraInfo):
+            if dwFlags & win32con.KEYEVENTF_KEYUP:
+                logger.info("[KEY_INJECT] (stub) KEY UP: VK 0x%02X", vKey)
             else:
-                new_sequence.append(PauseAction(self.default_delay))
-                new_sequence.append(a2)
-        macro._sequence = new_sequence
-
-
-class Macro:
-
-    """Represents a macro which can be executed."""
-
-    # Unique identifier for each macro
-    _next_macro_id = 0
-
-    def __init__(self):
-        """Creates a new macro instance."""
-        self._sequence = []
-        self._id = Macro._next_macro_id
-        Macro._next_macro_id += 1
-        self.repeat = None
-        self.exclusive = False
-
-    @property
-    def id(self):
-        """Returns the unique id of this macro.
-
-        :return unique id of this macro
-        """
-        return self._id
-
-    @property
-    def sequence(self):
-        """Returns the action sequence of this macro.
-
-        :return action sequence
-        """
-        return self._sequence
-
-    def add_action(self, action):
-        """Adds an action to the list of actions to perform.
-
-        :param action the action to add
-        """
-        self._sequence.append(action)
-
-    def pause(self, duration):
-        """Adds a pause of the given duration to the macro.
-
-        :param duration the duration of the pause in seconds
-        """
-        self._sequence.append(PauseAction(duration))
-
-    def press(self, key):
-        """Presses the specified key down.
-
-        :param key the key to press
-        """
-        self.action(key, True)
-
-    def release(self, key):
-        """Releases the specified key.
-
-        :param key the key to release
-        """
-        self.action(key, False)
-
-    def tap(self, key):
-        """Taps the specified key.
-
-        :param key the key to tap
-        """
-        self.action(key, True)
-        self.action(key, False)
-
-    def action(self, key, is_pressed):
-        """Adds the specified action to the sequence.
-
-        :param key the key involved in the action
-        :param is_pressed boolean indicating if the key is pressed
-            (True) or released (False)
-        """
-        if isinstance(key, str):
-            key = key_from_name(key)
-        elif isinstance(key, Key):
-            pass
-        else:
-            raise gremlin.error.KeyboardError("Invalid key specified")
-
-        self._sequence.append(KeyAction(key, is_pressed))
-
-
-class AbstractAction:
-
-    """Base class for all macro action."""
-
-    def __call__(self):
-        raise gremlin.error.MissingImplementationError(
-            "AbstractAction.__call__ not implemented in derived class."
-        )
-
-
-class JoystickAction(AbstractAction):
-
-    """Joystick input action for a macro."""
-
-    def __init__(self, device_guid, input_type, input_id, value, axis_type="absolute"):
-        """Creates a new JoystickAction instance for use in a macro.
-
-        :param device_guid GUID of the device generating the input
-        :param input_type type of input being generated
-        :param input_id id of the input being generated
-        :param value the value of the generated input
-        :param axis_type if an axis is used, how to interpret the value
-        """
-        self.device_guid = device_guid
-        self.input_type = input_type
-        self.input_id = input_id
-        self.value = value
-        self.axis_type = axis_type
-
-    def __call__(self):
-        """Emits an Event instance through the EventListener system."""
-        el = gremlin.event_handler.EventListener()
-        if self.input_type == gremlin.common.InputType.JoystickAxis:
-            event = gremlin.event_handler.Event(
-                event_type=self.input_type,
-                device_guid=self.device_guid,
-                identifier=self.input_id,
-                value=self.value
-            )
-        elif self.input_type == gremlin.common.InputType.JoystickButton:
-            event = gremlin.event_handler.Event(
-                event_type=self.input_type,
-                device_guid=self.device_guid,
-                identifier=self.input_id,
-                is_pressed=self.value
-            )
-        elif self.input_type == gremlin.common.InputType.JoystickHat:
-            event = gremlin.event_handler.Event(
-                event_type=self.input_type,
-                device_guid=self.device_guid,
-                identifier=self.input_id,
-                value=self.value
-            )
-
-        el.joystick_event.emit(event)
-
-
-class KeyAction(AbstractAction):
-
-    """Key to press or release by a macro."""
-
-    def __init__(self, key, is_pressed):
-        """Creates a new KeyAction object for use in a macro.
-
-        :param key the key to use in the action
-        :param is_pressed True if the key should be pressed, False otherwise
-        """
-        if not isinstance(key, Key):
-            raise gremlin.error.KeyboardError("Invalid Key instance provided")
-        self.key = key
-        self.is_pressed = is_pressed
-
-    def __call__(self):
-        if self.is_pressed:
-            _send_key_down(self.key)
-        else:
-            _send_key_up(self.key)
-
-
-class MouseButtonAction(AbstractAction):
-
-    """Mouse button action."""
-
-    def __init__(self, button, is_pressed):
-        """Creates a new MouseButtonAction object for use in a macro.
-
-        :param button the button to use in the action
-        :param is_pressed True if the button should be pressed, False otherwise
-        """
-        if not isinstance(button, gremlin.common.MouseButton):
-            raise gremlin.error.MouseError("Invalid mouse button provided")
-
-        self.button = button
-        self.is_pressed = is_pressed
-
-    def __call__(self):
-        if self.button == gremlin.common.MouseButton.WheelDown:
-            gremlin.sendinput.mouse_wheel(1)
-        elif self.button == gremlin.common.MouseButton.WheelUp:
-            gremlin.sendinput.mouse_wheel(-1)
-        else:
-            if self.is_pressed:
-                gremlin.sendinput.mouse_press(self.button)
-            else:
-                gremlin.sendinput.mouse_release(self.button)
-
-
-class MouseMotionAction(AbstractAction):
-
-    """Mouse motion action."""
-
-    def __init__(self, dx, dy):
-        """Creates a new MouseMotionAction object for use in a macro.
-
-        :param dx change along the X axis
-        :param dy change along the Y axis
-        """
-        self.dx = int(dx)
-        self.dy = int(dy)
-
-    def __call__(self):
-        gremlin.sendinput.mouse_relative_motion(self.dx, self.dy)
-
-
-class PauseAction(AbstractAction):
-
-    """Represents the pause in a macro between pressed."""
-
-    def __init__(self, duration):
-        """Creates a new Pause object for use in a macro.
-
-        :param duration the duration in seconds of the pause
-        """
-        self.duration = duration
-
-    def __call__(self):
-        time.sleep(self.duration)
-
-
-class VJoyAction(AbstractAction):
-
-    """VJoy input action for a macro."""
-
-    def __init__(self, vjoy_id, input_type, input_id, value, axis_type="absolute"):
-        """Creates a new JoystickAction instance for use in a macro.
-
-        :param vjoy_id id of the vjoy device which is to be modified
-        :param input_type type of input being generated
-        :param input_id id of the input being generated
-        :param value the value of the generated input
-        :param axis_type if an axis is used, how to interpret the value
-        """
-        self.vjoy_id = vjoy_id
-        self.input_type = input_type
-        self.input_id = input_id
-        self.value = value
-        self.axis_type = axis_type
-
-    def __call__(self):
-        vjoy = gremlin.joystick_handling.VJoyProxy()[self.vjoy_id]
-        if self.input_type == gremlin.common.InputType.JoystickAxis:
-            if self.axis_type == "absolute":
-                vjoy.axis(self.input_id).value = self.value
-            elif self.axis_type == "relative":
-                vjoy.axis(self.input_id).value = max(
-                    -1.0,
-                    min(1.0, vjoy.axis(self.input_id).value + self.value)
-                )
-        elif self.input_type == gremlin.common.InputType.JoystickButton:
-            vjoy.button(self.input_id).is_pressed = self.value
-        elif self.input_type == gremlin.common.InputType.JoystickHat:
-            vjoy.hat(self.input_id).direction = self.value
-
-
+                logger.info("[KEY_INJECT] (stub) KEY DOWN: VK 0x%02X", vKey)
+            # TODO: wire to key_inject.on Linux to actually inject
+        @staticmethod
+        def vk_keymapping(vk_code):
+            """Stub for win32api.vk_keymapping — returns (vk_code, scan_code, extended_flag).
+            On Windows this does keyboard layout translation; on Linux we return (VK, VK, 0)."""
+            return (vk_code, vk_code, 0)
+    win32api = _win32api_stub()
+
+
+# ==========================================================================
+# Linux stub: macro Python API classes (key mapping, macro management,
+# action types — no actual key sending on Linux, display/UI names only)
+# Original Windows versions are preserved in comments below.
+# ==========================================================================
+
+# ---------------------------------------------------------------------------
+# Stub: Key — single virtual key descriptor (name + scan code)
+# ---------------------------------------------------------------------------
 class Key:
+    """Descriptor for a single virtual key (scan code / virtual key code).
 
-    """Represents a single key on the keyboard together with its
-    different representations.
+    On Linux this is a pure data object — it does NOT send any keystrokes.
+    It exists only so the UI can display key names and the code_runner
+    can create `Macro` objects that *look* valid at the Python level.
     """
 
-    def __init__(self, name, scan_code, is_extended, virtual_code):
-        """Creates a new Key instance.
+    _key_names: dict[int, str] = {
+        0x01: "MouseLeft", 0x02: "MouseRight", 0x04: "MouseMiddle",
+        0x05: "MouseX1", 0x06: "MouseX2",
+        0x08: "Back",     0x09: "Tab",         0x0D: "Enter",
+        0x10: "Shift",    0x11: "Ctrl",        0x12: "Alt",
+        0x13: "Pause",    0x14: "CapsLock",    0x18: "Convert",
+        0x19: "NonConvert", 0x1E: "Accept",    0x1F: "ModeChange",
+        0x20: "Space",    0x21: "PageUp",      0x22: "PageDown",
+        0x23: "End",      0x24: "Home",        0x25: "Left",
+        0x26: "Up",       0x27: "Right",       0x28: "Down",
+        0x2C: "Print",    0x2D: "Insert",      0x2E: "Delete",
+        0x2F: "Help",     0x5B: "LeftWin",     0x5C: "RightWin",
+        0x5D: "Apps",     0x60: "Numpad0",     0x61: "Numpad1",
+        0x62: "Numpad2",  0x63: "Numpad3",     0x64: "Numpad4",
+        0x65: "Numpad5",  0x66: "Numpad6",     0x67: "Numpad7",
+        0x68: "Numpad8",  0x69: "Numpad9",     0x6A: "Multiply",
+        0x6B: "Add",      0x6C: "Separator",   0x6D: "Subtract",
+        0x6E: "Decimal",  0x6F: "Divide",      0x70: "F1",
+        0x71: "F2",       0x72: "F3",          0x73: "F4",
+        0x74: "F5",       0x75: "F6",          0x76: "F7",
+        0x77: "F8",       0x78: "F9",          0x79: "F10",
+        0x7A: "F11",      0x7B: "F12",         0x7C: "F13",
+        0x7D: "F14",      0x7E: "F15",         0x7F: "F16",
+        0x80: "F17",      0x81: "F18",         0x82: "F19",
+        0x83: "F20",      0x84: "F21",         0x85: "F22",
+        0x86: "F23",      0x87: "F24",
+        0x90: "NumLock",  0x91: "ScrollLock",
+        0xA0: "LeftShift", 0xA1: "RightShift",
+        0xA2: "LeftCtrl",  0xA3: "RightCtrl",
+        0xA4: "LeftAlt",   0xA5: "RightAlt",
+        0xB5: "Mute",     0xB6: "VolumeDown",  0xB7: "VolumeUp",
+        0xB8: "Pause",    0xBA: "Semicolon",   0xBB: "Equals",
+        0xBC: "Comma",    0xBD: "Minus",       0xBE: "Period",
+        0xBF: "Slash",    0xC0: "Accent",      0xDB: "OpenBracket",
+        0xDC: "BackSlash", 0xDD: "CloseBracket", 0xDE: "Quote",
+    }
 
-        :param name the name used to refer to this key
-        :param scan_code the scan code set 1 value corresponding
-            to this key
-        :param is_extended boolean indicating if the key is an
-            extended scan code or not
-        :param virtual_code the virtual key code assigned to this
-            key by windows
-        """
-        self._name = name
+    _all_keys: dict[str, "Key"] = {}  # cache by name for key_from_name
+
+    def __init__(self, scan_code: int, is_extended: bool = False) -> None:
         self._scan_code = scan_code
         self._is_extended = is_extended
-        self._virtual_code = virtual_code
-        self._lookup_name = None
+        self._vk_code: int = scan_code  # on stub, VK == scan_code
+        self._name: str = self._key_names.get(scan_code, f"Key({scan_code:#x})")
 
     @property
-    def name(self):
+    def name(self) -> str:
+        """Display name, e.g. 'Z', 'Enter', 'LeftShift'."""
         return self._name
 
     @property
-    def scan_code(self):
+    def scan_code(self) -> int:
+        """Raw scan code."""
         return self._scan_code
 
     @property
-    def is_extended(self):
+    def is_extended(self) -> bool:
+        """Whether this key is an extended key (numpad div, arrows, etc.)."""
         return self._is_extended
 
     @property
-    def virtual_code(self):
-        return self._virtual_code
+    def vk_code(self) -> int:
+        """Virtual key code."""
+        return self._vk_code
+
+    def __eq__(self, other: object) -> bool:
+        if isinstance(other, Key):
+            return self._scan_code == other._scan_code
+        return NotImplemented
+
+    def __hash__(self) -> int:
+        return hash(self._scan_code)
+
+    def __repr__(self) -> str:
+        return f"Key({self.name!r})"
+
+
+# ---------------------------------------------------------------------------
+# Stub: Keys — named collection of key constants (Keys.Z, Keys.ESC, …)
+# ---------------------------------------------------------------------------
+class _KeysMeta(type):
+    """Metaclass that lazily creates Key instances for named keys."""
+
+    _mapping: dict[str, int] = {
+        "LEFT": 0x25, "UP": 0x26, "RIGHT": 0x27, "DOWN": 0x28,
+        "PRIOR": 0x21, "NEXT": 0x22, "END": 0x23, "HOME": 0x24,
+        "SELECT": 0x29, "OPEN": 0x35, "PROPS": 0x36, "BACK": 0x08,
+        "PRINT": 0x2C, "INS": 0x2D, "DEL": 0x2E, "HELP": 0x2F,
+        "NUM0": 0x60, "NUM1": 0x61, "NUM2": 0x62, "NUM3": 0x63,
+        "NUM4": 0x64, "NUM5": 0x65, "NUM6": 0x66, "NUM7": 0x67,
+        "NUM8": 0x68, "NUM9": 0x69, "NUM_MUL": 0x6A, "NUM_ADD": 0x6B,
+        "NUM_SEP": 0x6C, "NUM_SUB": 0x6D, "NUM_DEC": 0x6E, "NUM_DIV": 0x6F,
+        "NUMLOCK": 0x90, "SCROLL": 0x91, "CAPS": 0x14,
+        "LWIN": 0x5B, "RWIN": 0x5C, "APPS": 0x5D,
+        "BACKPACK": 0x7E, "F15": 0x7E, "FOOD": 0x7F,
+        "MODEPAIRING": 0x80,
+    }
+
+    def __getattr__(cls, name: str) -> Key:
+        """Create a Key for the named attribute on first access."""
+        if name.startswith("_"):
+            raise AttributeError(name)
+        sc: int | None = cls._mapping.get(name)
+        if sc is None:
+            # Fall through to win32con VK_ constants
+            sc = getattr(win32con, f"VK_{name}", None)
+        if sc is None:
+            raise AttributeError(f"No such key: {name}")
+        if sc not in _KeyClass._all_keys:
+            # Auto-detect extended keys (arrows, numpad div, etc.)
+            keys = sc
+            k = _KeyClass(sc, False)
+            k._name = name
+            k._vk_code = sc
+            _KeyClass._all_keys[name] = k
+        return _KeyClass._all_keys[name].scan_code  # type: ignore[no-any-return]
+
+
+_KeyClass = Key  # Save original class before Key is overwritten by singleton
+Key = _KeysMeta("Keys", (), {})
+
+
+# Also populate from win32con VK_ constants where not already mapped
+_base_key_names = {
+    "VK_BACK": "Back", "VK_TAB": "Tab", "VK_RETURN": "Enter",
+    "VK_SHIFT": "Shift", "VK_CONTROL": "Ctrl", "VK_MENU": "Alt",
+    "VK_PAUSE": "Pause", "VK_CAPITAL": "CapsLock", "VK_ESCAPE": "Esc",
+    "VK_SPACE": "Space", "VK_PRIOR": "PageUp", "VK_NEXT": "PageDown",
+    "VK_END": "End", "VK_HOME": "Home", "VK_LEFT": "Left",
+    "VK_UP": "Up", "VK_RIGHT": "Right", "VK_DOWN": "Down",
+    "VK_INSERT": "Insert", "VK_DELETE": "Delete", "VK_HELP": "Help",
+    "VK_LWIN": "LeftWin", "VK_RWIN": "RightWin",
+    "VK_LSHIFT": "LeftShift", "VK_RSHIFT": "RightShift",
+    "VK_LCONTROL": "LeftCtrl", "VK_RCONTROL": "RightCtrl",
+    "VK_LMENU": "LeftAlt", "VK_RMENU": "RightAlt",
+    "VK_NUMPAD0": "Numpad0", "VK_NUMPAD1": "Numpad1", "VK_NUMPAD2": "Numpad2",
+    "VK_NUMPAD3": "Numpad3", "VK_NUMPAD4": "Numpad4", "VK_NUMPAD5": "Numpad5",
+    "VK_NUMPAD6": "Numpad6", "VK_NUMPAD7": "Numpad7", "VK_NUMPAD8": "Numpad8",
+    "VK_NUMPAD9": "Numpad9", "VK_MULTIPLY": "NumMultiply",
+    "VK_ADD": "NumAdd", "VK_SEPARATOR": "NumSeparator",
+    "VK_SUBTRACT": "NumSubtract", "VK_DECIMAL": "NumDecimal",
+    "VK_DIVIDE": "NumDivide", "VK_NUMLOCK": "NumLock",
+    "VK_F1": "F1", "VK_F2": "F2", "VK_F3": "F3", "VK_F4": "F4",
+    "VK_F5": "F5", "VK_F6": "F6", "VK_F7": "F7", "VK_F8": "F8",
+    "VK_F9": "F9", "VK_F10": "F10", "VK_F11": "F11", "VK_F12": "F12",
+    "VK_LBUTTON": "MouseLeft", "VK_RBUTTON": "MouseRight",
+    "VK_MBUTTON": "MouseMiddle", "VK_XBUTTON1": "MouseX1",
+    "VK_XBUTTON2": "MouseX2",
+}
+for vk_name, display_name in _base_key_names.items():
+    sc = getattr(win32con, vk_name, None)
+    if sc and sc not in _KeyClass._key_names:
+        _KeyClass._key_names[sc] = display_name
+
+# ─── A-Z letter keys and 0-9 number keys ───
+# These were missing from _key_names entirely, so key_from_code() would
+# always fall through to f"Key({scan_code:#x})" for common keys.
+for i, ch in enumerate('abcdefghijklmnopqrstuvwxyz'):
+    if (0x41 + i) not in _KeyClass._key_names:
+        _KeyClass._key_names[0x41 + i] = ch.upper()
+for i in range(10):
+    vk_code = 0x30 + i
+    if vk_code not in _KeyClass._key_names:
+        _KeyClass._key_names[vk_code] = str(i)
+
+
+def key_from_code(scan_code: int, is_extended: bool = False) -> Key:
+    """Create a Key from a scan code and optional extended flag."""
+    name = _KeyClass._key_names.get(scan_code, f"Key({scan_code:#x})")
+    if name in _KeyClass._all_keys:
+        return _KeyClass._all_keys[name]
+    k = _KeyClass(scan_code, is_extended)
+    k._name = name
+    _KeyClass._all_keys[name] = k
+    return k
+
+
+def key_from_name(name: str) -> Key | None:
+    """Create a Key from a display name (case-insensitive).
+
+    Returns None if the name is not found.
+    """
+    if name is None:
+        return None
+    lower = name.lower()
+
+    # Canonical lookup: iterate all known key names (fast, reliable)
+    for vk_code, disp_name in _KeyClass._key_names.items():
+        if disp_name.lower() == lower:
+            if vk_code in _KeyClass._all_keys:
+                return _KeyClass._all_keys[disp_name]
+            return _KeyClass(vk_code)
+
+    # Fallback: direct lookup in metaclass Keys mapping (e.g. "Z", "F1")
+    if name.upper() in _KeysMeta._mapping:
+        sc = _KeysMeta._mapping[name.upper()]
+        return _KeyClass(sc)
+
+    return None
+
+
+def key_to_string(key: Key | None) -> str:
+    """Convert a Key to its display string name."""
+    if key is None:
+        return ""
+    return key.name
+
+
+# ---------------------------------------------------------------------------
+# Stub: Macro — container for a sequence of actions
+# ---------------------------------------------------------------------------
+class _MacroAction:
+    """Internal representation of a single macro action entry."""
+
+    def __init__(
+        self,
+        action_type: str,
+        key: Key | None = None,
+        is_pressed: bool = True,
+        is_extended: bool = False,
+        vjoy_id: int = 0,
+        vjoy_axis: int = 0,
+        value: float = 0.0,
+        duration: float = 0.0,
+        joystick_id: int = 0,
+        joystick_axis: int = 0,
+        is_pressed_joy: bool = True,
+        is_vjoy_button: bool = False,
+        mb_value: int = 0,
+        dx: int = 0,
+        dy: int = 0,
+    ) -> None:
+        self.action_type = action_type
+        self.key = key
+        self.is_pressed = is_pressed
+        self.is_extended = is_extended
+        self.vjoy_id = vjoy_id
+        self.vjoy_axis = vjoy_axis
+        self.value = value
+        self.duration = duration
+        self.joystick_id = joystick_id
+        self.joystick_axis = joystick_axis
+        self.is_pressed_joy = is_pressed_joy
+        self.is_vjoy_button = is_vjoy_button
+        self.mb_value = mb_value  # For MouseButtonAction button identifier
+        self.dx = dx
+        self.dy = dy
+
+
+class Macro:
+    """A sequence of actions to execute (keys pressed, pauses, vJoy, …)."""
+
+    def __init__(self) -> None:
+        self._actions: list[_MacroAction] = []
+        self.exclusive: bool = False       # For use by MacroFunctor
+        self.repeat: object | None = None  # CountRepeat | HoldRepeat | ToggleRepeat | None
+
+    def add_action(self, action: object, index: int = -1) -> None:
+        """Add an action to the internal action list.
+
+        On Linux this translates action-plugin action types (KeyAction,
+        JoystickAction, MouseButtonAction, MouseMotionAction, PauseAction,
+        VJoyAction) into _MacroAction entries that the executor can process.
+        """
+        if isinstance(action, KeyAction):
+            self._actions.append(_MacroAction(
+                action_type="key",
+                key=action.key,
+                is_pressed=action.is_pressed,
+            ))
+        elif isinstance(action, JoystickAction):
+            self._actions.append(_MacroAction(
+                action_type="joystick",
+                joystick_id=action.device_guid,
+                joystick_axis=action.input_id,
+                value=action.value,
+            ))
+        elif isinstance(action, MouseButtonAction):
+            self._actions.append(_MacroAction(
+                action_type="mouse_button",
+                mb_value=action.button,
+                is_pressed=action.is_pressed,
+            ))
+        elif isinstance(action, MouseMotionAction):
+            self._actions.append(_MacroAction(
+                action_type="mouse_motion",
+                dx=action.dx,
+                dy=action.dy,
+            ))
+        elif isinstance(action, PauseAction):
+            self._actions.append(_MacroAction(
+                action_type="pause",
+                duration=action.duration,
+            ))
+        elif isinstance(action, VJoyAction):
+            from gremlin.common import InputType as _InputType
+            self._actions.append(_MacroAction(
+                action_type="vjoy",
+                vjoy_id=action.vjoy_id,
+                vjoy_axis=action.input_id,
+                is_vjoy_button=(action.input_type == _InputType.JoystickButton),
+                value=action.value,
+            ))
+        else:
+            logger.warning(
+                "[MACRO] Unknown action type: %s — skipping", type(action).__name__
+            )
+
+    def press(self, key: Key) -> None:
+        """Add a key-press action."""
+        self._actions.append(_MacroAction("key", key=key, is_pressed=True))
+
+    def release(self, key: Key) -> None:
+        """Add a key-release action."""
+        self._actions.append(_MacroAction("key", key=key, is_pressed=False))
+
+    def tap(self, key: Key) -> None:
+        """Add a key-tap (press then release)."""
+        self.press(key)
+        self.release(key)
+
+    def wait(self, duration: float) -> None:
+        """Add a pause/action wait."""
+        self._actions.append(_MacroAction("pause", duration=duration))
+
+    def mouse(self, x: int, y: int) -> None:
+        """Add a mouse motion action."""
+        self._actions.append(_MacroAction("mouse_motion", duration=0))
 
     @property
-    def lookup_name(self):
-        if self._lookup_name is not None:
-            return self._lookup_name
+    def is_valid(self) -> bool:
+        return len(self._actions) > 0
+
+    @property
+    def duration(self) -> float:
+        return sum(a.duration for a in self._actions)
+
+
+# ---------------------------------------------------------------------------
+# Stub: MacroManager — singleton managing macro queue / execution thread
+# ---------------------------------------------------------------------------
+class _MacroThread(Thread):
+    """Background thread that executes queued macros (no-op on Linux)."""
+
+    def run(self) -> None:
+        pass
+
+
+class MacroManager(metaclass=common.SingletonMetaclass):
+    """Singleton that manages macro execution lifecycle.
+
+    On Linux this manages a queue of macro actions and executes them
+    by injecting keys via /dev/uinput (virtual keyboard).
+
+    Singleton pattern: uses `metaclass=common.SingletonMetaclass`
+    (project-standard) instead of manual ``__new__``.
+    """
+
+    _lock: Lock = Lock()
+    _queue: collections.deque[Macro] = collections.deque()
+    _exec_thread: Thread | None = None
+    _stop_event: Event | None = None
+    _has_work: Event | None = None
+
+    def __init__(self) -> None:
+        self._default_delay = 100
+        self._stop_event = Event()
+        self._has_work = Event()
+
+    @property
+    def default_delay(self) -> int:
+        return self._default_delay
+
+    @default_delay.setter
+    def default_delay(self, value: int) -> None:
+        self._default_delay = value
+
+    def start(self) -> None:
+        """Start the macro execution thread (called once at app init)."""
+        # Reset stop event — it may be set from a prior stop() call
+        if self._stop_event is not None:
+            was_set = self._stop_event.is_set()
+            self._stop_event.clear()
+            logger.info("[MACRO_MGR] start(): _stop_event was_set=%s, after_clear=%s (id=%s)",
+                        was_set, self._stop_event.is_set(), id(self._stop_event))
         else:
-            return self._name
-
-    @lookup_name.setter
-    def lookup_name(self, name):
-        if self._lookup_name is not None:
-            raise gremlin.error.KeyboardError("Setting lookup name repeatedly")
-        self._lookup_name = name
-
-    def __eq__(self, other):
-        return hash(self) == hash(other)
-
-    def __ne__(self, other):
-        return not (self == other)
-
-    def __hash__(self):
-        if self._is_extended:
-            return (0x0E << 8) + self._scan_code
+            logger.warning("[MACRO_MGR] start(): _stop_event is None!")
+        if self._exec_thread is None or not self._exec_thread.is_alive():
+            logger.info("[MACRO_MGR] Starting macro executor thread")
+            self._exec_thread = threading.Thread(target=self._run_loop_wrapper, daemon=True, name="MacroExecutor")
+            self._exec_thread.start()
         else:
-            return self._scan_code
+            logger.debug("[MACRO_MGR] executor thread already running, no need to start")
 
+    def stop(self) -> None:
+        """Stop the macro execution thread."""
+        self._stop_event.set()
+        self._has_work.set()
+        if self._exec_thread:
+            self._exec_thread.join(timeout=1.0)
+            self._exec_thread = None
+        logger.info("[MACRO_MGR] Macro executor stopped")
 
-class AbstractRepeat:
+    def terminate_macro(self, macro: Macro) -> None:
+        """Terminate a macro associated with a HoldRepeat by removing it
+        from the queue and stopping its re-queueing."""
+        with self._lock:
+            self._queue = collections.deque(m for m in self._queue if m is not macro)
+            if not self._queue:
+                self._has_work.set()
+                self._has_work.clear()
+        logger.info("[MACRO_MGR] terminated macro (HoldRepeat end callback)")
 
-    """Base class for all macro repeat modes."""
+    def queue_macro(self, macro: Macro) -> None:
+        """Queue a macro for immediate execution."""
+        logger.info("[MACRO_MGR] queue_macro: action_count=%d", len(macro._actions))
+        # Log each action in the macro for debugging
+        for i, act in enumerate(macro._actions):
+            if act.action_type == "key" and act.key is not None:
+                vk = act.key._vk_code if hasattr(act.key, '_vk_code') else act.key.scan_code
+                logger.info("[MACRO_MGR]   action[%d]: key VK=0x%02X pressed=%s",
+                            i, vk, act.is_pressed)
+            elif act.action_type == "vjoy":
+                btn_str = "btn" if act.is_vjoy_button else "axis"
+                logger.info("[MACRO_MGR]   action[%d]: %s device=%d %s=%d value=%s is_vjoy_button=%s",
+                            i, "BUTTON" if act.is_vjoy_button else "AXIS",
+                            act.vjoy_id, btn_str, act.vjoy_axis, act.value, act.is_vjoy_button)
+            elif act.action_type == "mouse_button":
+                logger.info("[MACRO_MGR]   action[%d]: mouse_button button=%s pressed=%s",
+                            i, act.mb_value, act.is_pressed)
+            elif act.action_type == "pause":
+                logger.info("[MACRO_MGR]   action[%d]: pause duration=%.2fs", i, act.duration)
+            else:
+                logger.info("[MACRO_MGR]   action[%d]: type=%s", i, act.action_type)
 
-    def __init__(self, delay):
-        """Creates a new instance.
+        with self._lock:
+            self._queue.append(macro)
+        self._has_work.set()
+        logger.info("[MACRO_MGR] queue_macro: macro queued, _has_work set, thread started=%s",
+                     self._exec_thread is not None and self._exec_thread.is_alive())
+        
+        # If executor thread isn't running yet (e.g., app just started),
+        # make sure it's started
+        self.start()
 
-        :param delay the delay between repetitions
+    def _run_loop_wrapper(self) -> None:
+        """Wrapper for _run_loop that catches and logs any crash."""
+        logger.info("[MACRO_MGR] _run_loop_wrapper STARTING, _has_work=%s (id=%s), _stop_Event=%s (id=%s)",
+                     self._has_work, id(self._has_work), self._stop_event, id(self._stop_event))
+        try:
+            logger.info("[MACRO_MGR] _run_loop_wrapper entering _run_loop")
+            self._run_loop()
+            logger.info("[MACRO_MGR] _run_loop exited normally")
+        except Exception:
+            logger.critical("[MACRO_MGR] _run_loop crashed — see traceback below")
+            import traceback
+            logger.critical(traceback.format_exc())
+            logger.critical("[MACRO_MGR] giving up, not restarting")
+            return
+
+    def _run_loop(self) -> None:
+        """Background loop: dequeue macros and execute them."""
+        logger.info("[MACRO_MGR] Executor thread started")
+        while not self._stop_event.is_set():
+            # Wait for work to be available
+            if not self._has_work.wait(timeout=0.1):
+                continue  # timeout, no work
+            
+            logger.info("[MACRO_MGR] _has_work flagged — polling lock...")
+            
+            macro = None
+            with self._lock:
+                if self._queue:
+                    macro = self._queue.popleft()
+                    logger.info("[MACRO_MGR] dequeued macro %s (%d actions)",
+                                id(macro), len(macro._actions))
+                else:
+                    logger.info("[MACRO_MGR] queue empty despite _has_work — ignoring")
+                if not self._queue:
+                    self._has_work.clear()
+            
+            if macro is None:
+                continue
+                
+            logger.info("[MACRO_MGR] executing macro with %d actions", len(macro._actions))
+            try:
+                self._execute_macro(macro)
+                logger.info("[MACRO_MGR] macro execution completed successfully")
+            except Exception:
+                logger.exception("[MACRO_MGR] macro execution raised exception")
+
+    def _execute_macro(self, macro: Macro) -> None:
+        """Execute all actions in a macro sequentially."""
+        logger.info("[MACRO] Executing macro with %d actions, type=%s",
+                    len(macro._actions), type(self))
+        for i, action in enumerate(macro._actions):
+            logger.info("[MACRO] action[%d/%d] type=%s vjoy_id=%d vjoy_axis=%d value=%s is_vjoy_button=%s is_pressed=%s mb_value=%s",
+                        i, len(macro._actions), action.action_type,
+                        action.vjoy_id, action.vjoy_axis, action.value,
+                        action.is_vjoy_button if hasattr(action, 'is_vjoy_button') else 'N/A',
+                        action.is_pressed if hasattr(action, 'is_pressed') else 'N/A',
+                        action.mb_value if hasattr(action, 'mb_value') else 'N/A')
+            try:
+                if action.action_type == "key" and action.key is not None:
+                    logger.info("[MACRO] action[%d/%d]: executing key", i, len(macro._actions))
+                    self._execute_key(action)
+                elif action.action_type == "vjoy":
+                    logger.info("[MACRO] action[%d/%d]: executing vjoy button=%s", i, len(macro._actions), hasattr(action, 'is_vjoy_button') and action.is_vjoy_button)
+                    self._execute_vjoy(action)
+                    logger.info("[MACRO] action[%d/%d]: vjoy execution completed", i, len(macro._actions))
+                elif action.action_type == "joystick":
+                    logger.info("[MACRO] action[%d/%d]: executing joystick", i, len(macro._actions))
+                    self._execute_joystick(action)
+                elif action.action_type == "mouse_button":
+                    logger.info("[MACRO] action[%d/%d]: executing mouse_button", i, len(macro._actions))
+                    self._execute_mouse_button(action)
+                elif action.action_type == "mouse_motion":
+                    logger.info("[MACRO] action[%d/%d]: executing mouse_motion dx=%d dy=%d", i, len(macro._actions), action.dx, action.dy)
+                    self._execute_mouse_motion(action)
+                elif action.action_type == "pause":
+                    logger.info("[MACRO] action[%d] type=wait, sleeping %.2fs", i, action.duration)
+                    time.sleep(action.duration)  # duration is in decimal seconds
+                else:
+                    logger.warning("[MACRO] action[%d/%d] type=%s UNRECOGNIZED — no executor exists",
+                                   i, len(macro._actions), action.action_type)
+                # Small delay between actions
+                if i < len(macro._actions) - 1 and self._default_delay > 0:
+                    time.sleep(self._default_delay / 1000.0)
+            except Exception:
+                logger.exception("[MACRO] action[%d] raised exception, skipping rest", i)
+
+    def _execute_key(self, action: _MacroAction) -> None:
+        """Execute a single key action via /dev/uinput."""
+        logger.info("[KEY] _execute_key called: action_type=%s key=%s pressed=%s",
+                    action.action_type, action.key, action.is_pressed)
+        if action.key is None:
+            logger.info("[KEY] skipping — key is None")
+            return
+            
+        key_obj = action.key
+        scan_code = key_obj.scan_code if hasattr(key_obj, 'scan_code') else key_obj
+        logger.info("[KEY] key_obj type=%s scan_code=%s", type(key_obj), scan_code)
+        
+        # Convert to VK code for injection
+        if hasattr(key_obj, '_vk_code'):
+            vk_code = key_obj._vk_code
+            logger.info("[KEY] extracted vk_code via _vk_code: 0x%02X", vk_code)
+        else:
+            vk_code = scan_code  # use scan code as VK for key_inject
+            logger.info("[KEY] using scan_code as vk_code: 0x%02X", vk_code)
+        
+        # Use key_inject.vk_to_evdev() as the authoritative source
+        # vk_to_evdev now returns None for unmapped VK codes (critical fix)
+        logger.info("[KEY] calling vk_to_evdev(0x%02X)...", vk_code)
+        from gremlin import key_inject
+        ev_code = key_inject.vk_to_evdev(vk_code)
+        logger.info("[KEY] vk_to_evdev returned: %s", ev_code)
+        
+        # If vk doesn't have a valid evdev mapping, log and skip
+        if ev_code is None:
+            logger.warning("[KEY] vk_to_evdev(0x%02X) → None, no evdev mapping for this VK code. "
+                           "Key cannot be injected.", vk_code)
+            return
+        
+        pressed = action.is_pressed
+        logger.info("[KEY] ready to inject: VK=0x%02X → evdev=%d pressed=%s", vk_code, ev_code, pressed)
+        
+        # Inject via key_inject module if available
+        try:
+            if pressed:
+                logger.info("[KEY] calling inject_key_down(0x%02X)...", vk_code)
+                key_inject.inject_key_down(vk_code)
+                logger.info("[KEY] inject_key_down returned OK — no error logged")
+            else:
+                logger.info("[KEY] calling inject_key_up(0x%02X)...", vk_code)
+                key_inject.inject_key_up(vk_code)
+                logger.info("[KEY] inject_key_up returned OK — no error logged")
+        except Exception:
+            logger.exception("[KEY] injection raised exception")
+
+    def _execute_vjoy(self, action: _MacroAction) -> None:
+        """Execute a vJoy action (button, axis, or hat) on a virtual joystick device."""
+        logger.info("[VJOY] _execute_vjoy called: vjoy_id=%d axis=%s value=%s",
+                    action.vjoy_id, action.vjoy_axis, action.value)
+        if action.vjoy_id <= 0:
+            logger.info("[VJOY] skipping: vjoy_id=%d <= 0", action.vjoy_id)
+            return
+        
+        try:
+            from vjoy_linux.vjoy_interface import VJoyInterface
+        except ImportError:
+            logger.warning("[VJOY] vJoyInterface not available on this system")
+            return
+        
+        dev = VJoyInterface._devices.get(action.vjoy_id)
+        if dev is None or dev.fd is None:
+            logger.warning("[VJOY] vJoy device %d not found or fd=None", action.vjoy_id)
+            return
+        
+        logger.info("[VJOY] device %d found (fd=%s), determining action type...", action.vjoy_id, dev.fd)
+        if hasattr(action, 'is_vjoy_button') and action.is_vjoy_button:
+            # Button press: value should be True/False
+            logger.info("[VJOY] button action detected")
+            raw_val = action.value
+            if isinstance(raw_val, str):
+                is_pressed = raw_val.lower() in ("true", "1", "yes", "on", "pressed")
+            else:
+                is_pressed = bool(raw_val)
+            try:
+                result = VJoyInterface.SetBtn(is_pressed, action.vjoy_id, action.vjoy_axis)
+                state_str = "pressed" if is_pressed else "released"
+                logger.info("[VJOY] SetBtn → device=%d axis=%d %s result=%s",
+                            action.vjoy_id, action.vjoy_axis, state_str, result)
+            except Exception:
+                logger.exception("[VJOY] SetBtn failed")
+        else:
+            # Axis or POV hat: value should be numeric (float or int)
+            logger.info("[VJOY] axis/hat action detected")
+            try:
+                value = float(action.value) if action.value is not None else 0.0
+            except (ValueError, TypeError):
+                logger.warning("[VJOY] invalid value '%s' for vJoy device %d",
+                               action.value, action.vjoy_id)
+                return
+            
+            # Determine if this is an axis or POV hat based on vjoy_axis range
+            if action.vjoy_axis < 10:
+                logger.info("[VJOY] classified as axis (vjoy_axis=%d)", action.vjoy_axis)
+                if 0.0 <= value <= 1.0:
+                    abs_value = int(32767 * value)
+                elif -1.0 <= value < 0.0:
+                    abs_value = int(32767 * -1 * value)
+                else:
+                    abs_value = int(32767 * max(-1.0, min(1.0, value)))
+                
+                try:
+                    result = VJoyInterface.SetAxis(abs_value, action.vjoy_id, action.vjoy_axis)
+                    logger.info("[VJOY] SetAxis → device=%d axis=%d value=%d result=%s",
+                                action.vjoy_id, action.vjoy_axis, abs_value, result)
+                except Exception:
+                    logger.exception("[VJOY] SetAxis failed")
+            else:
+                logger.info("[VJOY] classified as POV hat (vjoy_axis=%d)", action.vjoy_axis)
+                pov_value = int(value) if not isinstance(value, int) else value
+                try:
+                    result = VJoyInterface.SetContPov(pov_value, action.vjoy_id, action.vjoy_axis)
+                    logger.info("[VJOY] SetContPov → device=%d hat=%d value=%d result=%s",
+                                action.vjoy_id, action.vjoy_axis, pov_value, result)
+                except Exception:
+                    logger.exception("[VJOY] SetContPov failed")
+
+    def _execute_mouse_button(self, action: _MacroAction) -> None:
+        """Execute a mouse button action via uinput/XTest mouse injection."""
+        logger.info("[MOUSE] _execute_mouse_button called: mb_value=%s pressed=%s",
+                    action.mb_value, action.is_pressed)
+        from gremlin.common import MouseButton
+        button = action.mb_value if action.mb_value else MouseButton.Left
+        logger.info("[MOUSE] button resolved: raw=%s type=%s", action.mb_value, type(button))
+        if not isinstance(button, MouseButton):
+            logger.info("[MOUSE] attempting int coercion...")
+            try:
+                button = MouseButton(int(button))
+                logger.info("[MOUSE] coercion OK: %s", button)
+            except (ValueError, TypeError):
+                logger.error("[MOUSE] cannot coerce mb_value=%s to MouseButton — aborting",
+                             action.mb_value)
+                return
+
+        logger.info("[MOUSE] action=%s button=%s",
+                    "press" if action.is_pressed else "release", button)
+        if action.is_pressed:
+            try:
+                from gremlin_linux.mouse_inject import mouse_press as _mouse_press
+                logger.info("[MOUSE] calling mouse_press...")
+                _mouse_press(button)
+                logger.info("[MOUSE] mouse_press OK — no error logged")
+            except Exception:
+                logger.exception("[MOUSE] mouse_press injection failed")
+        else:
+            try:
+                from gremlin_linux.mouse_inject import mouse_release as _mouse_release
+                logger.info("[MOUSE] calling mouse_release...")
+                _mouse_release(button)
+                logger.info("[MOUSE] mouse_release OK — no error logged")
+            except Exception:
+                logger.exception("[MOUSE] mouse_release injection failed")
+
+    def _execute_mouse_motion(self, action: _MacroAction) -> None:
+        """Execute a mouse motion (move to screen position dx, dy).
+
+        Uses xdotool (matching the working map_to_mouse XY motion at line 469).
         """
-        self.delay = delay
+        logger.info("[MOUSE] _execute_mouse_motion called: dx=%d dy=%d",
+                    action.dx, action.dy)
+        try:
+            import subprocess
+            result = subprocess.run(
+                ["xdotool", "mousemove", str(action.dx), str(action.dy)],
+                timeout=5,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            if result.returncode == 0:
+                logger.info("[MOUSE] mouse_motion → xdotool (%d, %d) OK",
+                            action.dx, action.dy)
+            else:
+                logger.warning("[MOUSE] xdotool exited with code %d", result.returncode)
+        except FileNotFoundError:
+            logger.warning("[MOUSE] xdotool not found — mouse motion skipped")
+        except subprocess.TimeoutExpired:
+            logger.warning("[MOUSE] xdotool timed out for (%d, %d)", action.dx, action.dy)
+        except Exception:
+            logger.exception("[MOUSE] mouse_motion injection failed")
 
-    def to_xml(self):
-        """Returns an XML node encoding the repeat information.
+    def _execute_joystick(self, action: _MacroAction) -> None:
+        """Execute a joystick action: bridge a physical joystick event into vJoy output.
 
-        :return XML node containing the instance's information
+        When a physical joystick button/axis event is captured (e.g. by a physical
+        joystick plugin), this translates it into the equivalent vJoy output on
+        the configured virtual device.
         """
-        raise gremlin.error.MissingImplementationError(
-            "AbstractRepeat.to_xml not implemented in subclass."
+        guid = str(action.joystick_id) if action.joystick_id is not None else "None"
+        axis = int(action.joystick_axis) if action.joystick_axis else 0
+        logger.info(
+            "[JOYSTICK] _execute_joystick called: device_guid=%s axis=%d value=%s",
+            guid, axis, action.value
+        )
+        logger.info(
+            "[MACRO] Joystick action: device_guid=%s axis=%d value=%s (no-op — vJoy output on Linux not yet implemented)",
+            guid, axis, action.value
         )
 
-    def from_xml(self, node):
-        """Populates the instance's data from the provided XML node.
 
-        :param node XML node containing data with which to populate the instance
-        """
-        raise gremlin.error.MissingImplementationError(
-            "AbstractRepeat.from_xml not implemented in subclass"
-        )
+# ---------------------------------------------------------------------------
+# Stub: Action types used by macro plugins
+# These must match what action_plugins/macro/__init__.py expects:
+#   JoystickAction, KeyAction, MouseButtonAction, MouseMotionAction,
+#   PauseAction, VJoyAction
+# ---------------------------------------------------------------------------
+class JoystickAction:
+    """Represents a joystick axis/button action."""
+
+    def __init__(
+        self,
+        device_guid: int,
+        input_type: object,
+        input_id: int,
+        value: str = "",
+        axis_type: str = "absolute",
+    ) -> None:
+        self.device_guid = device_guid
+        self.input_type = input_type  # InputType.JoystickAxis, JoystickButton, JoystickHat
+        self.input_id = input_id
+        self.value = value  # For axis: numeric string; for button: "True"/"False"; for hat: direction string
+        self.axis_type = axis_type  # "absolute" or "relative" (for vJoy compatibility)
 
 
-class CountRepeat(AbstractRepeat):
+class KeyAction:
+    """Represents a keyboard key action."""
 
-    """Repeat mode which repeats the macro a fixed number of times."""
+    def __init__(self, key: Key, is_pressed: bool = True) -> None:
+        self.key = key
+        self.is_pressed = is_pressed
 
-    def __init__(self, count=1, delay=0.1):
-        """Creates a new instance.
 
-        :param count the number of times to repeat the macro
-        :param delay the delay between repetitions
-        """
-        super().__init__(delay)
-        self.count = count
+class MouseButtonAction:
+    """Represents a mouse button press/release."""
 
-    def to_xml(self):
-        """Returns an XML node encoding the repeat information.
+    def __init__(
+        self,
+        button: int,
+        is_pressed: bool = True
+    ) -> None:
+        self.button = button
+        self.is_pressed = is_pressed
 
-        :return XML node containing the instance's information
-        """
+
+class MouseMotionAction:
+    """Represents mouse motion (delta X, Y)."""
+
+    def __init__(self, dx: int, dy: int) -> None:
+        self.dx = dx
+        self.dy = dy
+
+
+class PauseAction:
+    """Represents a pause / wait duration."""
+
+    def __init__(self, duration: float) -> None:
+        self.duration = duration
+
+
+class VJoyAction:
+    """Represents a vJoy axis/button/hat action."""
+
+    def __init__(
+        self,
+        vjoy_id: int,
+        input_type: object,
+        input_id: int,
+        value: str | bool,
+        axis_type: str = "absolute",
+    ) -> None:
+        self.vjoy_id = vjoy_id
+        self.input_type = input_type  # InputType.JoystickAxis, JoystickButton, JoystickHat
+        self.input_id = input_id
+        self.value = value  # For axis: numeric string; for button: "True"/"False"; for hat: direction string
+        self.axis_type = axis_type  # "absolute" or "relative" (for vJoy compatibility)
+
+
+# ===== Repeat types used by macro plugin for auto-repeating a macro =====
+# These are pure data objects — they store repeat configuration
+# and handle XML serialization for profile persistence.
+
+class CountRepeat:
+    """Repeat a macro a specific number of times."""
+
+    def __init__(self, count: int = 1, delay: float = 0.1) -> None:
+        self.count: int = count
+        self.delay: float = delay
+
+    def to_xml(self) -> "ElementTree.Element":
+        """Serialize to XML element."""
         node = ElementTree.Element("repeat")
         node.set("type", "count")
-        node.set("count", str(self.count))
-        node.set("delay", str(self.delay))
+        count_el = ElementTree.SubElement(node, "count")
+        count_el.set("value", str(self.count))
+        delay_el = ElementTree.SubElement(node, "delay")
+        delay_el.set("value", str(self.delay))
         return node
 
-    def from_xml(self, node):
-        """Populates the instance's data from the provided XML node.
+    @classmethod
+    def from_xml(cls, node: "ElementTree.Element") -> "CountRepeat":
+        """Deserialize from XML element."""
+        count = int(node.find("count").get("value"))  # type: ignore[union-attr]
+        delay = float(node.find("delay").get("value"))  # type: ignore[union-attr]
+        return cls(count=count, delay=delay)
 
-        :param node XML node containing data with which to populate the instance
-        """
-        self.delay = float(node.get("delay"))
-        self.count = int(node.get("count"))
 
+class ToggleRepeat:
+    """Toggle repeat on/off; macro repeats until toggle pressed again."""
 
-class ToggleRepeat(AbstractRepeat):
+    def __init__(self, delay: float = 0.1) -> None:
+        self.delay: float = delay
 
-    """Repeat mode which repeats the macro as long as it hasn't been toggled
-    off again after being toggled on."""
-
-    def __init__(self, delay=0.1):
-        """Creates a new instance.
-
-        :param delay the delay between repetitions
-        """
-        super().__init__(delay)
-
-    def to_xml(self):
-        """Returns an XML node encoding the repeat information.
-
-        :return XML node containing the instance's information
-        """
+    def to_xml(self) -> "ElementTree.Element":
+        """Serialize to XML element."""
         node = ElementTree.Element("repeat")
         node.set("type", "toggle")
-        node.set("delay", str(self.delay))
+        delay_el = ElementTree.SubElement(node, "delay")
+        delay_el.set("value", str(self.delay))
         return node
 
-    def from_xml(self, node):
-        """Populates the instance's data from the provided XML node.
+    @classmethod
+    def from_xml(cls, node: "ElementTree.Element") -> "ToggleRepeat":
+        """Deserialize from XML element."""
+        delay = float(node.find("delay").get("value"))  # type: ignore[union-attr]
+        return cls(delay=delay)
 
-        :param node XML node containing data with which to populate the instance
-        """
-        self.delay = float(node.get("delay"))
 
+class HoldRepeat:
+    """Hold to repeat; macro repeats while button is held."""
 
-class HoldRepeat(AbstractRepeat):
+    def __init__(self, delay: float = 0.1) -> None:
+        self.delay: float = delay
 
-    """Repeat mode which repeats the macro as long as the activation condition
-    is being fulfilled or held down."""
-
-    def __init__(self, delay=0.1):
-        """Creates a new instance.
-
-        :param delay the delay between repetitions
-        """
-        super().__init__(delay)
-
-    def to_xml(self):
-        """Returns an XML node encoding the repeat information.
-
-        :return XML node containing the instance's information
-        """
+    def to_xml(self) -> "ElementTree.Element":
+        """Serialize to XML element."""
         node = ElementTree.Element("repeat")
         node.set("type", "hold")
-        node.set("delay", str(self.delay))
+        delay_el = ElementTree.SubElement(node, "delay")
+        delay_el.set("value", str(self.delay))
         return node
 
-    def from_xml(self, node):
-        """Populates the instance's data from the provided XML node.
-
-        :param node XML node containing data with which to populate the instance
-        """
-        self.delay = float(node.get("delay"))
-
-
-def key_from_name(name):
-    """Returns the key corresponding to the provided name.
-
-    If no key exists with the provided name None is returned.
-
-    :param name the name of the key to return
-    :return Key instance or None
-    """
-    global g_scan_code_to_key, g_name_to_key
-
-    # Attempt to located the key in our database and return it if successful
-    key_name = name.lower().replace(" ", "")
-    key = g_name_to_key.get(key_name, None)
-    if key is not None:
-        return key
-
-    # Attempt to create the key to store and return if successful
-    key = _unicode_to_key(name)
-    if key is None:
-        logging.getLogger("system").warning(
-            "Invalid key name specified \"{}\"".format(name)
-        )
-        raise gremlin.error.KeyboardError(
-            "Invalid key specified, {}".format(name)
-        )
-    else:
-        g_scan_code_to_key[(key.scan_code, key.is_extended)] = key
-        g_name_to_key[key_name] = key
-        return key
-
-
-def key_from_code(scan_code, is_extended):
-    """Returns the key corresponding to the provided scan code.
-
-    If no key exists with the provided scan code None is returned.
-
-    :param scan_code the scan code of the desired key
-    :param is_extended flag indicating if the key is extended
-    :return Key instance or None
-    """
-    global g_scan_code_to_key, g_name_to_key
-
-    # Attempt to located the key in our database and return it if successful
-    key = g_scan_code_to_key.get((scan_code, is_extended), None)
-    if key is not None:
-        return key
-
-    # Attempt to create the key to store and return if successful
-    virtual_code = _scan_code_to_virtual_code(scan_code, is_extended)
-    name = _virtual_input_to_unicode(virtual_code)
-
-    if virtual_code == 0xFF or name is None:
-        logging.getLogger("system").warning(
-            "Invalid scan code specified ({}, {})".format(
-                scan_code, is_extended
-            )
-        )
-        raise gremlin.error.KeyboardError(
-            "Invalid scan code specified ({}, {})".format(
-                    scan_code, is_extended
-            )
-        )
-    else:
-        key = Key(name, scan_code, is_extended, virtual_code)
-        g_scan_code_to_key[(scan_code, is_extended)] = key
-        g_name_to_key[name.lower()] = key
-        return key
-
-
-# Storage for the various keys, prepopulated with non alphabetical keys
-g_scan_code_to_key = {}
-g_name_to_key = {
-    # Function keys
-    "f1": Key("F1", 0x3b, False, win32con.VK_F1),
-    "f2": Key("F2", 0x3c, False, win32con.VK_F2),
-    "f3": Key("F3", 0x3d, False, win32con.VK_F3),
-    "f4": Key("F4", 0x3e, False, win32con.VK_F4),
-    "f5": Key("F5", 0x3f, False, win32con.VK_F5),
-    "f6": Key("F6", 0x40, False, win32con.VK_F6),
-    "f7": Key("F7", 0x41, False, win32con.VK_F7),
-    "f8": Key("F8", 0x42, False, win32con.VK_F8),
-    "f9": Key("F9", 0x43, False, win32con.VK_F9),
-    "f10": Key("F10", 0x44, False, win32con.VK_F10),
-    "f11": Key("F11", 0x57, False, win32con.VK_F11),
-    "f12": Key("F12", 0x58, False, win32con.VK_F12),
-    # Control keys
-    "printscreen": Key("Print Screen", 0x37, True, win32con.VK_PRINT),
-    "scrolllock": Key("Scroll Lock", 0x46, False, win32con.VK_SCROLL),
-    "pause": Key("Pause", 0x45, False, win32con.VK_PAUSE),
-    # 6 control block
-    "insert": Key("Insert", 0x52, True, win32con.VK_INSERT),
-    "home": Key("Home", 0x47, True, win32con.VK_HOME),
-    "pageup": Key("PageUp", 0x49, True, win32con.VK_PRIOR),
-    "delete": Key("Delete", 0x53, True, win32con.VK_DELETE),
-    "end": Key("End", 0x4f, True, win32con.VK_END),
-    "pagedown": Key("PageDown", 0x51, True, win32con.VK_NEXT),
-    # Arrow keys
-    "up": Key("Up", 0x48, True, win32con.VK_UP),
-    "left": Key("Left", 0x4b, True, win32con.VK_LEFT),
-    "down": Key("Down", 0x50, True, win32con.VK_DOWN),
-    "right": Key("Right", 0x4d, True, win32con.VK_RIGHT),
-    # Numpad
-    "numlock": Key("NumLock", 0x45, True, win32con.VK_NUMLOCK),
-    "npdivide": Key("Numpad /", 0x35, True, win32con.VK_DIVIDE),
-    "npmultiply": Key("Numpad *", 0x37, False, win32con.VK_MULTIPLY),
-    "npminus": Key("Numpad -", 0x4a, False, win32con.VK_SUBTRACT),
-    "npplus": Key("Numpad +", 0x4e, False, win32con.VK_ADD),
-    "npenter": Key("Numpad Enter", 0x1c, True, win32con.VK_SEPARATOR),
-    "npdelete": Key("Numpad Delete", 0x53, False, win32con.VK_DECIMAL),
-    "np0": Key("Numpad 0", 0x52, False, win32con.VK_NUMPAD0),
-    "np1": Key("Numpad 1", 0x4f, False, win32con.VK_NUMPAD1),
-    "np2": Key("Numpad 2", 0x50, False, win32con.VK_NUMPAD2),
-    "np3": Key("Numpad 3", 0x51, False, win32con.VK_NUMPAD3),
-    "np4": Key("Numpad 4", 0x4b, False, win32con.VK_NUMPAD4),
-    "np5": Key("Numpad 5", 0x4c, False, win32con.VK_NUMPAD5),
-    "np6": Key("Numpad 6", 0x4d, False, win32con.VK_NUMPAD6),
-    "np7": Key("Numpad 7", 0x47, False, win32con.VK_NUMPAD7),
-    "np8": Key("Numpad 8", 0x48, False, win32con.VK_NUMPAD8),
-    "np9": Key("Numpad 9", 0x49, False, win32con.VK_NUMPAD9),
-    # Misc keys
-    "backspace": Key("Backspace", 0x0e, False, win32con.VK_BACK),
-    "space": Key("Space", 0x39, False, win32con.VK_SPACE),
-    "tab": Key("Tab", 0x0f, False, win32con.VK_TAB),
-    "capslock": Key("CapsLock", 0x3a, False, win32con.VK_CAPITAL),
-    "leftshift": Key("Left Shift", 0x2a, False, win32con.VK_LSHIFT),
-    "leftcontrol": Key("Left Control", 0x1d, False, win32con.VK_LCONTROL),
-    "leftwin": Key("Left Win", 0x5b, True, win32con.VK_LWIN),
-    "leftalt": Key("Left Alt", 0x38, False, win32con.VK_LMENU),
-    # Right shift key appears to exist in both extended and
-    # non-extended version
-    "rightshift": Key("Right Shift", 0x36, False, win32con.VK_RSHIFT),
-    "rightshift2": Key("Right Shift", 0x36, True, win32con.VK_RSHIFT),
-    "rightcontrol": Key("Right Control", 0x1d, True, win32con.VK_RCONTROL),
-    "rightwin": Key("Right Win", 0x5c, True, win32con.VK_RWIN),
-    "rightalt": Key("Right Alt", 0x38, True, win32con.VK_RMENU),
-    "apps": Key("Apps", 0x5d, True, win32con.VK_APPS),
-    "enter": Key("Enter", 0x1c, False, win32con.VK_RETURN),
-    "esc": Key("Esc", 0x01, False, win32con.VK_ESCAPE)
-}
-
-
-# Populate the scan code based lookup table
-for name_, key_ in g_name_to_key.items():
-    assert isinstance(key_, Key)
-    key_.lookup_name = name_
-    g_scan_code_to_key[(key_.scan_code, key_.is_extended)] = key_
+    @classmethod
+    def from_xml(cls, node: "ElementTree.Element") -> "HoldRepeat":
+        """Deserialize from XML element."""
+        delay = float(node.find("delay").get("value"))  # type: ignore[union-attr]
+        return cls(delay=delay)
