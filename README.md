@@ -17,7 +17,7 @@ sudo usermod -aG input $USER
 ```
 
 x11 & Wayland Desktops have different limitations and some functionality was lost:
-* Mouse move: Motion & X/Y (some functionality under X11)
+* Mouse move: Motion & X/Y (still some functionality under X11)
 * Condition for Actions is untested
 
 Be sure to install the pip requirements:
@@ -28,7 +28,6 @@ To run the app, setup the normal python environment and run:
 ```
 ./JoystickGremlinUX$ python joystick_gremlin.py 
 ```
-
 
 ```
 ======================================================================
