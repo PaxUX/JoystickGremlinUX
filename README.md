@@ -43,6 +43,8 @@ JoystickGremlinUX — Linux System Checks
   PyQt5 (GUI)                              OK
   reportlab (cheatsheet PDF)               OK
 ```
+Notes:
+The Device UUID stored in Profile's XML are different between Windows and Linux. Button codes on Windows and Linux are also different.  Right now it's not possible to use a profile created on Windows in Linux version.
 
 Legacy Notes
 ------------
