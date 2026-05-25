@@ -667,6 +667,9 @@ class AbstractContainer(profile.ProfileData):
                 action_set = []
                 self._parse_action_xml(child, action_set)
                 self.action_sets.append(action_set)
+            elif child.tag == "activation-condition":
+                # Parsed separately by _parse_activation_condition_xml()
+                continue
             else:
                 logging.getLogger("system").warning(
                     "Unknown node present: {}".format(child.tag)

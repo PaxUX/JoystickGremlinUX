@@ -37,7 +37,12 @@ class VisualizationType(enum.Enum):
 
 class VisualizationSelector(QtWidgets.QWidget):
 
-    """Presents a list of possibly device and visualization widgets."""
+    """Presents a list of possibly device and visualization widgets.
+
+    The left-hand panel is constrained to a fixed width so that adding
+    visualization widgets into the scroll area on the right never causes
+    the outer window to expand into this panel.
+    """
 
     # Event emitted when the visualization configuration changes
     changed = QtCore.pyqtSignal(
@@ -46,6 +51,8 @@ class VisualizationSelector(QtWidgets.QWidget):
         bool
     )
 
+    FIXED_WIDTH = 300
+
     def __init__(self, parent=None):
         """Creates a new instance.
 
@@ -53,9 +60,12 @@ class VisualizationSelector(QtWidgets.QWidget):
         """
         super().__init__(parent)
 
+        self.setFixedWidth(self.FIXED_WIDTH)
         devices = gremlin.joystick_handling.joystick_devices()
 
         self.main_layout = QtWidgets.QVBoxLayout(self)
+        self.main_layout.setAlignment(QtCore.Qt.AlignTop | QtCore.Qt.AlignLeft)
+        
         for dev in sorted(devices, key=lambda x: (x.name, x.vjoy_id)):
             if dev.is_virtual:
                 box = QtWidgets.QGroupBox("{} #{:d}".format(
@@ -85,8 +95,11 @@ class VisualizationSelector(QtWidgets.QWidget):
             layout.addWidget(bh_cb)
 
             box.setLayout(layout)
-
             self.main_layout.addWidget(box)
+            box.setAlignment(QtCore.Qt.AlignTop | QtCore.Qt.AlignLeft)
+
+        self.main_layout.addStretch()
+
 
     def _create_callback(self, device, vis_type):
         """Creates the callback to trigger visualization updates.
@@ -94,16 +107,24 @@ class VisualizationSelector(QtWidgets.QWidget):
         :param device the device being updated
         :param vis_type visualization type being updated
         """
-        return lambda state: self.changed.emit(
-                device,
-                vis_type,
-                state == QtCore.Qt.Checked
-            )
+        # device and vis_type are captured as defaults so each lambda
+        # stores its own copy (avoids the closure-in-a-loop bug).
+        return lambda state, d=device, t=vis_type: self.changed.emit(d, t, state == QtCore.Qt.Checked)
 
 
 class InputViewerUi(common.BaseDialogUi):
 
-    """Main UI dialog for the input viewer."""
+    """Main UI dialog for the input viewer.
+
+    Hierarchy:
+        Window (resizable)
+        └── QScrollArea (fills width/height)
+            └── QVBoxLayout
+                ├── VisualizationSelector (left column, fixed width)
+                └── QGridLayout (right column — dynamic widgets in a grid)
+"""
+
+    SELECTOR_WIDTH = 300
 
     def __init__(self, parent=None):
         """Creates a new instance.
@@ -112,83 +133,77 @@ class InputViewerUi(common.BaseDialogUi):
         """
         super().__init__(parent)
 
-        self._widget_storage = {}
+        self._widget_storage: dict[tuple, object] = {}
+
+        # Track the next grid cell position for sequential placement.
+        self._widget_row = 0
+        self._widget_col = 0
 
         self.devices = gremlin.joystick_handling.joystick_devices()
-        self.setLayout(QtWidgets.QHBoxLayout())
+        self.setLayout(QtWidgets.QVBoxLayout())
 
+        # Outer scroll area auto-fills the window height/width.
+        self.scroll = QtWidgets.QScrollArea()
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAsNeeded)
+        self.scroll.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAsNeeded)
+        self.scroll.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Expanding,
+            QtWidgets.QSizePolicy.Policy.Expanding,
+        )
+
+        self.scroll_widget = QtWidgets.QWidget()
+        self.scroll_layout = QtWidgets.QVBoxLayout(self.scroll_widget)
+        self.scroll_widget.setLayout(self.scroll_layout)
+        self.scroll.setWidget(self.scroll_widget)
+        self.layout().addWidget(self.scroll)
+
+        # ── [Selector] [Grid of widgets] ──
+        self.side_layout = QtWidgets.QHBoxLayout()
+        self.scroll_layout.addLayout(self.side_layout)
+
+        # LEFT column: selector panel (300px wide)
         self.vis_selector = VisualizationSelector()
-        self.vis_selector.changed.connect(self._add_remove_visualization_widget)
+        self.vis_selector.changed.connect(
+            self._add_remove_visualization_widget
+        )
+        self.vis_selector.setFixedWidth(self.SELECTOR_WIDTH)
+        self.side_layout.addWidget(self.vis_selector)
 
-        self.views = InputViewerArea()
-
-        self.layout().addWidget(self.vis_selector)
-        self.layout().addWidget(self.views)
+        # RIGHT column: side-by-side grid for all visualizers
+        self.grid_holders = QtWidgets.QWidget()
+        self._grid_layout = QtWidgets.QGridLayout(self.grid_holders)
+        self._grid_layout.setSpacing(10)
+        self._grid_layout.setAlignment(QtCore.Qt.AlignTop | QtCore.Qt.AlignLeft)
+        self.side_layout.addWidget(self.grid_holders)
 
     def _add_remove_visualization_widget(self, device, vis_type, is_active):
         """Adds or removes a visualization widget.
 
-        :param device the device which is being updated
-        :param vis_type the visualization type being updated
-        :param is_active if True the visualization is added, if False it is
-            removed
+          --Dynamic widgets fill the grid side-by-side (3 columns wide).
+        nope, change 1 with new window layout
         """
         key = device, vis_type
         widget = JoystickDeviceWidget(device, vis_type)
         if is_active:
-            self.views.add_widget(widget)
+            row = self._widget_row
+            col = self._widget_col
+            self._grid_layout.addWidget(widget, row, col)
+            self._widget_col += 1
+            #if self._widget_col >= 3:
+#Pax            
+            if self._widget_col >= 1:
+                self._widget_col = 0
+                self._widget_row += 1
+
+            widget.show()
             self._widget_storage[key] = widget
+
         elif key in self._widget_storage:
-            self.views.remove_widget(self._widget_storage[key])
+            old_widget = self._widget_storage[key]
+            self._grid_layout.removeWidget(old_widget)
+            old_widget.hide()
             del self._widget_storage[key]
-
-
-class InputViewerArea(QtWidgets.QScrollArea):
-
-    """Holds individual input visualization widgets."""
-
-    def __init__(self, parent=None):
-        """Creates a new instance.
-
-        :param parent the parent of this widget
-        """
-        super().__init__(parent)
-
-        self.widgets = []
-        self.setWidgetResizable(True)
-        self.scroll_widget = QtWidgets.QWidget()
-        self.scroll_layout = QtWidgets.QVBoxLayout()
-        self.scroll_layout.addStretch()
-        self.scroll_widget.setLayout(self.scroll_layout)
-        self.setWidget(self.scroll_widget)
-
-    def add_widget(self, widget):
-        """Adds the specified widget to the visualization area.
-
-        :param widget the widget to add
-        """
-        self.widgets.append(widget)
-        self.scroll_layout.insertWidget(self.scroll_layout.count() - 1, widget)
-        widget.show()
-
-        width = 0
-        height = 0
-        for widget in self.widgets:
-            hint = widget.minimumSizeHint()
-            height = max(height, hint.height())
-            width = max(width, hint.width())
-        self.setMinimumSize(QtCore.QSize(width+40, height))
-
-    def remove_widget(self, widget):
-        """Removes a widget from the visualization area.
-
-        :param widget the widget to remove
-        """
-        self.scroll_layout.removeWidget(widget)
-        widget.hide()
-        del self.widgets[self.widgets.index(widget)]
-        del widget
-
 
 class JoystickDeviceWidget(QtWidgets.QWidget):
 
@@ -220,6 +235,8 @@ class JoystickDeviceWidget(QtWidgets.QWidget):
             self._create_button_hat()
             el.joystick_event.connect(self._button_hat_update)
 
+            
+
     def minimumSizeHint(self):
         """Returns the minimum size of this widget.
 
@@ -243,17 +260,32 @@ class JoystickDeviceWidget(QtWidgets.QWidget):
             self.layout().addWidget(widget)
         self.layout().addStretch(1)
 
+        # Get the full widget's size hint (which includes margins)
+        h = self.sizeHint().height()
+        self.setFixedHeight(h)
+
+
     def _create_current_axis(self):
         """Creates display for current axes data."""
         self.widgets = [AxesCurrentState(self.device_data)]
         for widget in self.widgets:
             self.layout().addWidget(widget)
 
+        # Get the full widget's size hint (which includes margins)
+        h = self.sizeHint().height()
+        self.setFixedHeight(int(h * 1.25))
+
+
     def _create_temporal_axis(self):
         """Creates display for temporal axes data."""
         self.widgets = [AxesTimeline(self.device_data)]
         for widget in self.widgets:
             self.layout().addWidget(widget)
+
+        # Get the full widget's size hint (which includes margins)
+        h = self.sizeHint().height()
+        self.setFixedHeight(h)
+
 
     def _button_hat_update(self, event):
         """Updates the button and hat display.
@@ -475,9 +507,10 @@ class AxesCurrentState(QtWidgets.QGroupBox):
             axis.set_value(0.0)
             self.axes.append(axis)
             axes_layout.addWidget(axis)
-        axes_layout.addStretch()
+#        axes_layout.addStretch()
         self.setLayout(axes_layout)
-
+        axes_layout.addStretch()
+ 
     def process_event(self, event):
         """Updates state visualization based on the given event.
 

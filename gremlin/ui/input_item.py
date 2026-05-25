@@ -1120,7 +1120,7 @@ class ConditionActionWrapper(AbstractActionWrapper):
 
         # Setup activation condition UI
         action_data = self.action_widget.action_data
-        if action_data.parent.activation_condition_type == "action":
+        if action_data.parent.activation_condition_type in ("action", "default"):
             if action_data.activation_condition is None:
                 action_data.activation_condition = \
                     gremlin.base_classes.ActivationCondition(
@@ -1135,5 +1135,3 @@ class ConditionActionWrapper(AbstractActionWrapper):
             self.condition_view.set_model(self.condition_model)
             self.condition_view.redraw()
             self.main_layout.addWidget(self.condition_view)
-        else:
-            action_data.activation_condition = None

@@ -32,7 +32,7 @@ class ActivationConditionWidget(QtWidgets.QWidget):
     # Signal which is emitted whenever the widget's contents change
     activation_condition_modified = QtCore.pyqtSignal()
 
-    # Maps activation type name to index
+    # Maps internal name to UI dropdown index
     activation_type_to_index = {
         None: 0,
         "action": 1,
@@ -54,13 +54,20 @@ class ActivationConditionWidget(QtWidgets.QWidget):
         """Creates the configuration UI."""
         self.granularity_selector = QtWidgets.QComboBox()
         self.granularity_selector.addItem("None")
-        self.granularity_selector.addItem("Action")
-        self.granularity_selector.addItem("Container")
-        self.granularity_selector.setCurrentIndex(
-            ActivationConditionWidget.activation_type_to_index[
-                self.profile_data.activation_condition_type
-            ]
-        )
+        self.granularity_selector.addItem("Just This Action")
+        self.granularity_selector.addItem("All Actions in Container")        
+        
+        # Resolve the current index; handle legacy values like "default" → "action"
+        effective_type = self.profile_data.activation_condition_type
+        if effective_type is None:
+            idx = 0
+        elif effective_type not in ActivationConditionWidget.activation_type_to_index:
+            # legacy "default" label → treat as "action" (no gating)
+            idx = 1
+        else:
+            idx = ActivationConditionWidget.activation_type_to_index[effective_type]
+        
+        self.granularity_selector.setCurrentIndex(idx)
         self.granularity_selector.currentIndexChanged.connect(
             self._granularity_changed_cb
         )
@@ -91,6 +98,10 @@ class ActivationConditionWidget(QtWidgets.QWidget):
     def _granularity_changed_cb(self, index):
         """Updates whether conditions are on actions or containers.
 
+        Index 0 → None (no gating)
+        Index 1 → "action" (per-action defaults, renamed from "Action" to "Default")
+        Index 2 → "container" (container-level gating)
+
         :param index the entry of the selection box
         """
         index_to_type = {
@@ -98,16 +109,22 @@ class ActivationConditionWidget(QtWidgets.QWidget):
             1: "action",
             2: "container"
         }
+        old_type = self.profile_data.activation_condition_type
         self.profile_data.activation_condition_type = index_to_type[index]
 
         if self.profile_data.activation_condition_type == "container":
-            self.profile_data.activation_condition = \
-                base_classes.ActivationCondition(
-                    [],
-                    base_classes.ActivationRule.All
-                )
-        else:
-            self.profile_data.activation_condition = None
+            # Only create container conditions when switching TO container,
+            # and only if there isn't already a valid condition object
+            if self.profile_data.activation_condition is None:
+                self.profile_data.activation_condition = \
+                    base_classes.ActivationCondition(
+                        [],
+                        base_classes.ActivationRule.All
+                    )
+        elif old_type == "container":
+            # Switching AWAY from container: preserve the condition object
+            # but the execution graph will no longer use it as container-level gating
+            pass
 
         self.activation_condition_modified.emit()
 
@@ -625,13 +642,16 @@ class VJoyConditionWidget(AbstractConditionWidget):
         self.condition_data.input_type = data["input_type"]
         self.condition_data.input_id = data["input_id"]
 
-        if data["input_type"] == InputType.JoystickAxis:
-            self.condition_data.comparison = "inside"
-        elif data["input_type"] == InputType.JoystickButton:
-            self.condition_data.comparison = "pressed"
-        elif data["input_type"] == InputType.JoystickHat:
-            self.condition_data.comparison = \
-                util.hat_tuple_to_direction((0, 0))
+        # Only set default comparison values if no prior value exists.
+        # Existing values come from XML loading and must be preserved.
+        if not self.condition_data.comparison:
+            if data["input_type"] == InputType.JoystickAxis:
+                self.condition_data.comparison = "inside"
+            elif data["input_type"] == InputType.JoystickButton:
+                self.condition_data.comparison = "pressed"
+            elif data["input_type"] == InputType.JoystickHat:
+                self.condition_data.comparison = \
+                    util.hat_tuple_to_direction((0, 0))
         self._create_ui()
 
     def _range_lower_changed_cb(self, value):
