@@ -1,32 +1,35 @@
-name: Build and Release Flatpak
+name: Test Flatpak Build
 
 on:
   push:
-    tags:
-      - 'v*' # Runs automatically whenever you push a version tag like v1.0.0
+    branches:
+      - flatpak-test
+  workflow_dispatch: # Allows manual button-click triggers in GitHub UI
 
 jobs:
   build-flatpak:
-    name: "Build Flatpak Bundle"
+    name: "Build Test Flatpak Bundle"
     runs-on: ubuntu-latest
 
     steps:
     - name: Checkout Repository
       uses: actions/checkout@v4
+      with:
+        ref: flatpak-test
 
     - name: Set up QEMU
       uses: docker/setup-qemu-action@v3
 
+    # FIX: Pointed specifically to the master branch of the sub-action
     - name: Flatpak Builder
-      uses: flatpak/flatpak-github-actions/flatpak-builder@v1
+      uses: flatpak/flatpak-github-actions/flatpak-builder@master
       with:
         bundle: com.joystickgremlinux.JoystickGremlinUX.flatpak
         manifest-path: .flatpak/com.joystickgremlinux.JoystickGremlinUX.json
         cache: false
 
-    - name: Create GitHub Release
-      uses: softprops/action-gh-release@v2
+    - name: Upload Test Build Artifact
+      uses: actions/upload-artifact@v4
       with:
-        files: com.joystickgremlinux.JoystickGremlinUX.flatpak
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        name: test-flatpak-bundle
+        path: com.joystickgremlinux.JoystickGremlinUX.flatpak
