@@ -20,21 +20,20 @@ jobs:
     - name: Set up QEMU
       uses: docker/setup-qemu-action@v3
 
-    # FIX 1: Add flathub explicitly as a --user repository
+    # FIX: Install utilities and pre-fetch the explicit version dependencies in user space
     - name: Install Flatpak Build Requirements
       run: |
         sudo apt-get update
         sudo apt-get install -y flatpak flatpak-builder ostree
         flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+        flatpak install --user -y flathub org.freedesktop.Platform//24.08 org.freedesktop.Sdk//24.08
 
-    # FIX 2: Pass --user to flatpak-builder via the action arguments
     - name: Flatpak Builder
       uses: flatpak/flatpak-github-actions/flatpak-builder@master
       with:
         bundle: com.joystickgremlinux.JoystickGremlinUX.flatpak
         manifest-path: .flatpak/com.joystickgremlinux.JoystickGremlinUX.json
         cache: false
-        flatpak-builder-args: --user
 
     - name: Upload Test Build Artifact
       uses: actions/upload-artifact@v4
