@@ -1,0 +1,55 @@
+{
+  "app-id": "com.joystickgremlinux.JoystickGremlinUX",
+  "runtime": "org.freedesktop.Platform",
+  "runtime-version": "24.08",
+  "sdk": "org.freedesktop.Sdk",
+  "command": "JoystickGremlinUX",
+  "separate-locales": false,
+  "modules": [
+    {
+      "name": "python3-requirements",
+      "buildsystem": "simple",
+      "build-commands": [
+        "pip3 install --verbose --exists-action=i --no-index --find-links=\"file://${PWD}\" --prefix=/app -r requirements.txt"
+      ],
+      "sources": [
+        {
+          "type": "file",
+          "url": "https://pythonhosted.org",
+          "sha256": "4b68db60ec78e47bf4b143c7b7d7ca9df6a62ffcf595df874d6c75ef7a0fc6ea"
+        }
+      ]
+    },
+    {
+      "name": "app",
+      "buildsystem": "simple",
+      "build-commands": [
+        "mkdir -p /app/share/JoystickGremlinUX",
+        "cp -r * /app/share/JoystickGremlinUX/",
+        "mkdir -p /app/bin",
+        "echo '#!/bin/sh' > /app/bin/JoystickGremlinUX",
+        "echo 'export PYTHONPATH=/app/lib/python3.11/site-packages:$PYTHONPATH' >> /app/bin/JoystickGremlinUX",
+        "echo 'exec python3 /app/share/JoystickGremlinUX/joystick_gremlin.py \"$@\"' >> /app/bin/JoystickGremlinUX",
+        "chmod +x /app/bin/JoystickGremlinUX"
+      ],
+      "sources": [
+        {
+          "type": "dir",
+          "path": "../"
+        }
+      ]
+    }
+  ],
+  "finish-args": [
+    "--socket=x11",
+    "--socket=wayland",
+    "--socket=pulseaudio",
+    "--share=ipc",
+    "--share=network",
+    "--device=dri",
+    "--device=all",
+    "--filesystem=host:rw",
+    "--filesystem=/dev/uinput:rw",
+    "--talk-name=org.freedesktop.Flatpak"
+  ]
+}
