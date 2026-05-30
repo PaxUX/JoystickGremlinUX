@@ -4,7 +4,7 @@ on:
   push:
     branches:
       - flatpak-test
-  workflow_dispatch: # Allows manual button-click triggers in GitHub UI
+  workflow_dispatch:
 
 jobs:
   build-flatpak:
@@ -12,39 +12,29 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    # 1. Pull down the repository source files
     - name: Checkout Repository
       uses: actions/checkout@v4
       with:
         ref: flatpak-test
 
-    # 2. Install flatpak system binary tools
     - name: Install Flatpak Host Utilities
       run: |
         sudo apt-get update
         sudo apt-get install -y flatpak flatpak-builder ostree wget
 
-    # 3. Download the physical repo file to avoid string matching/URL parsing issues
     - name: Setup User-Space Dependencies
       run: |
         wget https://flathub.org
         flatpak remote-add --user --if-not-exists flathub flathub.flatpakrepo
         flatpak install --user -y flathub org.freedesktop.Platform//24.08 org.freedesktop.Sdk//24.08
 
-    # 4. Move manifest to the root directory and invoke flatpak-builder natively
     - name: Compile Application Bundle
       run: |
-        # Copy the json out of .flatpak to the root workspace directory
         cp .flatpak/com.joystickgremlinux.JoystickGremlinUX.json ./manifest.json
-        
-        # Modify the source path paths inside the root manifest copy to look locally at the current dir
         sed -i 's/"path": "\.\.\/"/"path": "\."/g' ./manifest.json
-        
-        # Run flatpak-builder from the project root directory
         flatpak-builder --user --repo=repo --install-deps-from=flathub --force-clean build-dir ./manifest.json
         flatpak build-bundle repo com.joystickgremlinux.JoystickGremlinUX.flatpak com.joystickgremlinux.JoystickGremlinUX
 
-    # 5. Export the finished binary build file
     - name: Upload Test Build Artifact
       uses: actions/upload-artifact@v4
       with:
