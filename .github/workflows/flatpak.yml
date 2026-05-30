@@ -10,30 +10,29 @@ jobs:
   build-flatpak:
     name: "Build Test Flatpak Bundle"
     runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/flatpak/flatpak-builder:latest
+      options: --privileged # Gives the container permission to use the ostree/sandbox filesystem mounts
 
     steps:
+    # 1. Pull down the source repository code
     - name: Checkout Repository
       uses: actions/checkout@v4
       with:
         ref: flatpak-test
 
-    - name: Set up QEMU
-      uses: docker/setup-qemu-action@v3
-
-    # FIX: Add Flathub to the system-wide level so flatpak-builder can resolve refs natively
-    - name: Install Flatpak Build Requirements
+    # 2. Add the Flathub remote directly inside the container environment
+    - name: Initialize Flathub Remote
       run: |
-        sudo apt-get update
-        sudo apt-get install -y flatpak flatpak-builder ostree
-        sudo flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+        flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
 
-    - name: Flatpak Builder
-      uses: flatpak/flatpak-github-actions/flatpak-builder@master
-      with:
-        bundle: com.joystickgremlinux.JoystickGremlinUX.flatpak
-        manifest-path: .flatpak/com.joystickgremlinux.JoystickGremlinUX.json
-        cache: false
+    # 3. Manually call flatpak-builder using the container tools
+    - name: Compile Flatpak Application Bundle
+      run: |
+        flatpak-builder --repo=repo --install-deps-from=flathub --force-clean build-dir .flatpak/com.joystickgremlinux.JoystickGremlinUX.json
+        flatpak build-bundle repo com.joystickgremlinux.JoystickGremlinUX.flatpak com.joystickgremlinux.JoystickGremlinUX
 
+    # 4. Save and export the compiled test package archive
     - name: Upload Test Build Artifact
       uses: actions/upload-artifact@v4
       with:
