@@ -20,11 +20,12 @@ jobs:
     - name: Set up QEMU
       uses: docker/setup-qemu-action@v3
 
-    # FIX: Install the missing packaging binaries on the runner machine
+    # FIX: Install packaging tools AND add Flathub remotes to the system
     - name: Install Flatpak Build Requirements
       run: |
         sudo apt-get update
         sudo apt-get install -y flatpak flatpak-builder ostree
+        sudo flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
 
     - name: Flatpak Builder
       uses: flatpak/flatpak-github-actions/flatpak-builder@master
