@@ -10,29 +10,33 @@ jobs:
   build-flatpak:
     name: "Build Test Flatpak Bundle"
     runs-on: ubuntu-latest
-    container:
-      image: ghcr.io/flatpak/flatpak-builder:latest
-      options: --privileged # Gives the container permission to use the ostree/sandbox filesystem mounts
 
     steps:
-    # 1. Pull down the source repository code
+    # 1. Pull down the repository source files
     - name: Checkout Repository
       uses: actions/checkout@v4
       with:
         ref: flatpak-test
 
-    # 2. Add the Flathub remote directly inside the container environment
-    - name: Initialize Flathub Remote
+    # 2. Install flatpak system binary tools
+    - name: Install Flatpak Host Utilities
       run: |
-        flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+        sudo apt-get update
+        sudo apt-get install -y flatpak flatpak-builder ostree
 
-    # 3. Manually call flatpak-builder using the container tools
-    - name: Compile Flatpak Application Bundle
+    # 3. Securely set up the Flathub server references and target runtime SDKs in user-space
+    - name: Setup User-Space Dependencies
       run: |
-        flatpak-builder --repo=repo --install-deps-from=flathub --force-clean build-dir .flatpak/com.joystickgremlinux.JoystickGremlinUX.json
+        flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+        flatpak install --user -y flathub org.freedesktop.Platform//24.08 org.freedesktop.Sdk//24.08
+
+    # 4. Invoke flatpak-builder on the host machine explicitly
+    - name: Compile Application Bundle
+      run: |
+        flatpak-builder --user --repo=repo --install-deps-from=flathub --force-clean build-dir .flatpak/com.joystickgremlinux.JoystickGremlinUX.json
         flatpak build-bundle repo com.joystickgremlinux.JoystickGremlinUX.flatpak com.joystickgremlinux.JoystickGremlinUX
 
-    # 4. Save and export the compiled test package archive
+    # 5. Export the finished binary build file
     - name: Upload Test Build Artifact
       uses: actions/upload-artifact@v4
       with:
