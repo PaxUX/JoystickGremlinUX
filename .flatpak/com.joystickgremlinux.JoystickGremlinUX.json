@@ -10,13 +10,23 @@
       "name": "python3-requirements",
       "buildsystem": "simple",
       "build-commands": [
-        "pip3 install --verbose --exists-action=i --no-index --find-links=\"file://${PWD}\" --prefix=/app -r requirements.txt"
+        "pip3 install --no-index --find-links=\"file://${PWD}\" --prefix=/app PyQt5 evdev reportlab"
       ],
       "sources": [
         {
           "type": "file",
           "url": "https://pythonhosted.org",
           "sha256": "4b68db60ec78e47bf4b143c7b7d7ca9df6a62ffcf595df874d6c75ef7a0fc6ea"
+        },
+        {
+          "type": "file",
+          "url": "https://pythonhosted.org",
+          "sha256": "426f0fa0466be8515ce402be40f901170d47343e06cf057bb0810dbbf63f25c7"
+        },
+        {
+          "type": "file",
+          "url": "https://pythonhosted.org",
+          "sha256": "82e4e11cb00bfbb0f69a19d08e70a312ba203597b819fbc7095039bebfd9c759"
         }
       ]
     },
