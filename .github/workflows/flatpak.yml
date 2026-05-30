@@ -27,13 +27,20 @@ jobs:
     # 3. Securely set up the Flathub server references and target runtime SDKs in user-space
     - name: Setup User-Space Dependencies
       run: |
-        flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+        flatpak remote-add --user --if-not-exists flathub https://flathub.org
         flatpak install --user -y flathub org.freedesktop.Platform//24.08 org.freedesktop.Sdk//24.08
 
-    # 4. Invoke flatpak-builder on the host machine explicitly
+    # 4. Move manifest to the root directory and invoke flatpak-builder natively
     - name: Compile Application Bundle
       run: |
-        flatpak-builder --user --repo=repo --install-deps-from=flathub --force-clean build-dir .flatpak/com.joystickgremlinux.JoystickGremlinUX.json
+        # Copy the json out of .flatpak to the root workspace directory
+        cp .flatpak/com.joystickgremlinux.JoystickGremlinUX.json ./manifest.json
+        
+        # Modify the source path paths inside the root manifest copy to look locally at the current dir
+        sed -i 's/"path": "\.\.\/"/"path": "\."/g' ./manifest.json
+        
+        # Run flatpak-builder from the project root directory
+        flatpak-builder --user --repo=repo --install-deps-from=flathub --force-clean build-dir ./manifest.json
         flatpak build-bundle repo com.joystickgremlinux.JoystickGremlinUX.flatpak com.joystickgremlinux.JoystickGremlinUX
 
     # 5. Export the finished binary build file
