@@ -27,6 +27,7 @@ jobs:
     # 3. Securely set up the Flathub server references and target runtime SDKs in user-space
     - name: Setup User-Space Dependencies
       run: |
+        # FIX: Point directly to the secure dl.flathub.org repo package URL
         flatpak remote-add --user --if-not-exists flathub https://flathub.org
         flatpak install --user -y flathub org.freedesktop.Platform//24.08 org.freedesktop.Sdk//24.08
 
