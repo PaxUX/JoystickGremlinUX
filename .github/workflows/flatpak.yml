@@ -22,13 +22,13 @@ jobs:
     - name: Install Flatpak Host Utilities
       run: |
         sudo apt-get update
-        sudo apt-get install -y flatpak flatpak-builder ostree
+        sudo apt-get install -y flatpak flatpak-builder ostree wget
 
-    # 3. Securely set up the Flathub server references and target runtime SDKs in user-space
+    # 3. Download the physical repo file to avoid string matching/URL parsing issues
     - name: Setup User-Space Dependencies
       run: |
-        # FIX: Point directly to the secure dl.flathub.org repo package URL
-        flatpak remote-add --user --if-not-exists flathub https://flathub.org
+        wget https://flathub.org
+        flatpak remote-add --user --if-not-exists flathub flathub.flatpakrepo
         flatpak install --user -y flathub org.freedesktop.Platform//24.08 org.freedesktop.Sdk//24.08
 
     # 4. Move manifest to the root directory and invoke flatpak-builder natively
