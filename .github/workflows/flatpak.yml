@@ -24,15 +24,15 @@ jobs:
 
     - name: Setup User-Space Dependencies
       run: |
-        wget https://flathub.org
-        flatpak remote-add --user --if-not-exists flathub flathub.flatpakrepo
-        flatpak install --user -y flathub org.freedesktop.Platform//24.08 org.freedesktop.Sdk//24.08
+        wget -O flathub.flatpakrepo https://flathub.org/repo/flathub.flatpakrepo
+        flatpak remote-add --if-not-exists flathub flathub.flatpakrepo
+        flatpak install -y flathub org.freedesktop.Platform//24.08 org.freedesktop.Sdk//24.08
 
     - name: Compile Application Bundle
       run: |
         cp .flatpak/com.joystickgremlinux.JoystickGremlinUX.json ./manifest.json
         sed -i 's/"path": "\.\.\/"/"path": "\."/g' ./manifest.json
-        flatpak-builder --user --repo=repo --install-deps-from=flathub --force-clean build-dir ./manifest.json
+        flatpak-builder --repo=repo --install-deps-from=flathub --force-clean build-dir ./manifest.json
         flatpak build-bundle repo com.joystickgremlinux.JoystickGremlinUX.flatpak com.joystickgremlinux.JoystickGremlinUX
 
     - name: Upload Test Build Artifact
