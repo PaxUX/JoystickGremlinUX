@@ -14,19 +14,19 @@
       ],
       "sources": [
         {
-          "type": "file",
-          "url": "https://pythonhosted.org",
-          "sha256": "4b68db60ec78e47bf4b143c7b7d7ca9df6a62ffcf595df874d6c75ef7a0fc6ea"
+          "type": "archive",
+          "url": "https://files.pythonhosted.org/packages/0e/07/c9ed0bd428df6f87183fca565a79fee19fa7c88c7f00a7f011ab4379e77a/PyQt5-5.15.11.tar.gz",
+          "sha256": "fda45743ebb4a27b4b1a51c6d8ef455c4c1b5d610c90d2934c7802b5c1557c52"
         },
         {
-          "type": "file",
-          "url": "https://pythonhosted.org",
-          "sha256": "426f0fa0466be8515ce402be40f901170d47343e06cf057bb0810dbbf63f25c7"
+          "type": "archive",
+          "url": "https://files.pythonhosted.org/packages/a5/f5/397b61091120a9ca5001041dd7bf76c385b3bfd67a0e5bcb74b852bd22a4/evdev-1.9.3.tar.gz",
+          "sha256": "2c140e01ac8437758fa23fe5c871397412461f42d421aa20241dc8fe8cfccbc9"
         },
         {
-          "type": "file",
-          "url": "https://pythonhosted.org",
-          "sha256": "82e4e11cb00bfbb0f69a19d08e70a312ba203597b819fbc7095039bebfd9c759"
+          "type": "archive",
+          "url": "https://files.pythonhosted.org/packages/4d/3f/b3861b7e40c9d66f4a04e018958d681d16b948bfd1963c962d43a8c23f66/reportlab-4.5.1.tar.gz",
+          "sha256": "9fdf68f4de9171ec66acb4a5feed8f8ca2af43479e707a6fbb0daa75d88e5494"
         }
       ]
     },
@@ -58,7 +58,6 @@
     "--share=network",
     "--device=dri",
     "--device=all",
-    "--filesystem=host:rw",
     "--filesystem=/dev/uinput:rw",
     "--talk-name=org.freedesktop.Flatpak"
   ]
